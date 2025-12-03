@@ -1,0 +1,60 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# GDExtension build artifacts
+build/
+bin/*.so
+bin/*.dll
+bin/*.dylib
+
+# godot-cpp (cloned dependency)
+godot-cpp/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled Object files
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lib
+*.a
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug files
+*.dSYM/
+
+# Godot exported builds
+export/
+*.pck
+*.zip
