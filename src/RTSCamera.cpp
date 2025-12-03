@@ -8,6 +8,11 @@
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -51,6 +56,9 @@ void RTSCamera::_ready() {
     target_position = Vector3(0, 0, 0);
     current_zoom = 30.0f; // Start at a good viewing distance
     
+    // Setup custom cursor
+    setup_custom_cursor();
+    
     update_camera_transform();
 }
 
@@ -59,6 +67,7 @@ void RTSCamera::_process(double delta) {
         return;
     }
     
+    update_cursor(delta);
     handle_keyboard_movement(delta);
     handle_edge_scroll(delta);
     
@@ -119,12 +128,10 @@ void RTSCamera::handle_keyboard_movement(double delta) {
 }
 
 void RTSCamera::handle_edge_scroll(double delta) {
-    Input *input = Input::get_singleton();
     Viewport *viewport = get_viewport();
     
-    if (!viewport) return;
+    if (!viewport || !cursor_initialized) return;
     
-    Vector2 mouse_pos = viewport->get_mouse_position();
     Vector2 viewport_size = viewport->get_visible_rect().size;
     
     Vector3 direction = Vector3(0, 0, 0);
@@ -133,16 +140,16 @@ void RTSCamera::handle_edge_scroll(double delta) {
     Vector3 forward = Vector3(-Math::sin(yaw_rad), 0, -Math::cos(yaw_rad));
     Vector3 right = Vector3(Math::cos(yaw_rad), 0, -Math::sin(yaw_rad));
     
-    // Edge detection
-    if (mouse_pos.x < edge_scroll_margin) {
+    // Edge detection using custom cursor position
+    if (cursor_position.x <= edge_scroll_margin) {
         direction -= right;
-    } else if (mouse_pos.x > viewport_size.x - edge_scroll_margin) {
+    } else if (cursor_position.x >= viewport_size.x - edge_scroll_margin) {
         direction += right;
     }
     
-    if (mouse_pos.y < edge_scroll_margin) {
+    if (cursor_position.y <= edge_scroll_margin) {
         direction += forward;
-    } else if (mouse_pos.y > viewport_size.y - edge_scroll_margin) {
+    } else if (cursor_position.y >= viewport_size.y - edge_scroll_margin) {
         direction -= forward;
     }
     
@@ -241,6 +248,98 @@ void RTSCamera::set_max_zoom(float zoom) {
 
 float RTSCamera::get_max_zoom() const {
     return max_zoom;
+}
+
+void RTSCamera::setup_custom_cursor() {
+    Viewport *viewport = get_viewport();
+    if (!viewport) return;
+    
+    // Hide system cursor
+    Input::get_singleton()->set_mouse_mode(Input::MOUSE_MODE_HIDDEN);
+    
+    // Get viewport size and center cursor
+    Vector2 viewport_size = viewport->get_visible_rect().size;
+    cursor_position = viewport_size / 2.0f;
+    
+    // Create canvas layer for cursor (always on top)
+    cursor_layer = memnew(CanvasLayer);
+    cursor_layer->set_layer(100); // High layer to be on top
+    get_tree()->get_root()->call_deferred("add_child", cursor_layer);
+    
+    // Create cursor sprite
+    cursor_sprite = memnew(Sprite2D);
+    cursor_layer->call_deferred("add_child", cursor_sprite);
+    
+    // Create a simple cursor texture (arrow shape)
+    Ref<Image> img = Image::create(24, 24, false, Image::FORMAT_RGBA8);
+    img->fill(Color(0, 0, 0, 0)); // Transparent background
+    
+    // Draw a simple arrow cursor
+    // Main arrow body (white with black outline)
+    for (int y = 0; y < 20; y++) {
+        int width = y / 2 + 1;
+        for (int x = 0; x < width && x < 12; x++) {
+            // Black outline
+            if (x == 0 || x == width - 1 || y == 0 || y == 19) {
+                img->set_pixel(x, y, Color(0, 0, 0, 1));
+            } else {
+                img->set_pixel(x, y, Color(1, 1, 1, 1));
+            }
+        }
+    }
+    // Arrow tail
+    for (int y = 12; y < 20; y++) {
+        for (int x = 4; x < 8; x++) {
+            if (x == 4 || x == 7 || y == 19) {
+                img->set_pixel(x, y, Color(0, 0, 0, 1));
+            } else {
+                img->set_pixel(x, y, Color(1, 1, 1, 1));
+            }
+        }
+    }
+    
+    Ref<ImageTexture> texture = ImageTexture::create_from_image(img);
+    cursor_sprite->set_texture(texture);
+    cursor_sprite->set_position(cursor_position);
+    cursor_sprite->set_offset(Vector2(0, 0)); // Top-left of texture is the hotspot
+    
+    cursor_initialized = true;
+}
+
+void RTSCamera::update_cursor(double delta) {
+    if (!cursor_initialized || !cursor_sprite) return;
+    
+    Viewport *viewport = get_viewport();
+    if (!viewport) return;
+    
+    Input *input = Input::get_singleton();
+    Vector2 viewport_size = viewport->get_visible_rect().size;
+    
+    // Get mouse relative movement
+    Vector2 mouse_velocity = input->get_last_mouse_velocity();
+    
+    // Move cursor based on mouse movement (use actual mouse position delta)
+    Vector2 current_mouse = viewport->get_mouse_position();
+    static Vector2 last_mouse = current_mouse;
+    Vector2 mouse_delta = current_mouse - last_mouse;
+    last_mouse = current_mouse;
+    
+    // Apply movement to cursor
+    cursor_position += mouse_delta;
+    
+    // Clamp cursor to viewport bounds
+    cursor_position.x = Math::clamp(cursor_position.x, 0.0f, viewport_size.x);
+    cursor_position.y = Math::clamp(cursor_position.y, 0.0f, viewport_size.y);
+    
+    // Update cursor sprite position
+    cursor_sprite->set_position(cursor_position);
+    
+    // Warp mouse to center to allow continuous movement detection
+    Vector2 center = viewport_size / 2.0f;
+    if (current_mouse.distance_to(center) > 100.0f) {
+        input->warp_mouse(center);
+        last_mouse = center;
+    }
 }
 
 } // namespace rts

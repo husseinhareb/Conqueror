@@ -11,6 +11,8 @@
 #include <godot_cpp/classes/input_event.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
+#include <godot_cpp/classes/sprite2d.hpp>
+#include <godot_cpp/classes/canvas_layer.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 namespace rts {
@@ -22,7 +24,7 @@ private:
     // Movement settings
     float move_speed = 20.0f;
     float edge_scroll_margin = 50.0f;
-    float edge_scroll_speed = 15.0f;
+    float edge_scroll_speed = 25.0f;
     
     // Zoom settings
     float zoom_speed = 2.0f;
@@ -40,6 +42,13 @@ private:
     
     // Target position for smooth movement
     godot::Vector3 target_position;
+    
+    // Custom cursor
+    godot::Sprite2D *cursor_sprite = nullptr;
+    godot::CanvasLayer *cursor_layer = nullptr;
+    godot::Vector2 cursor_position = godot::Vector2(0, 0);
+    float cursor_speed = 800.0f;
+    bool cursor_initialized = false;
 
 protected:
     static void _bind_methods();
@@ -59,6 +68,8 @@ public:
     void handle_rotation(const godot::Vector2 &relative);
     
     void update_camera_transform();
+    void setup_custom_cursor();
+    void update_cursor(double delta);
 
     // Getters/Setters
     void set_move_speed(float speed);
