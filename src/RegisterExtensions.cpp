@@ -10,6 +10,7 @@
 
 #include "RTSCamera.h"
 #include "Unit.h"
+#include "Building.h"
 #include "SelectionManager.h"
 #include "FlowFieldManager.h"
 #include "UnitSpawner.h"
@@ -25,6 +26,7 @@ void initialize_rts_module(ModuleInitializationLevel p_level) {
     // Register all RTS classes
     ClassDB::register_class<rts::RTSCamera>();
     ClassDB::register_class<rts::Unit>();
+    ClassDB::register_class<rts::Building>();
     ClassDB::register_class<rts::SelectionManager>();
     ClassDB::register_class<rts::FlowFieldManager>();
     ClassDB::register_class<rts::UnitSpawner>();

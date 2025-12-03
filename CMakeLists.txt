@@ -49,6 +49,7 @@ add_subdirectory(${GODOT_CPP_DIR} godot-cpp)
 set(RTS_SOURCES
     src/RTSCamera.cpp
     src/Unit.cpp
+    src/Building.cpp
     src/SelectionManager.cpp
     src/FlowFieldManager.cpp
     src/UnitSpawner.cpp
@@ -60,6 +61,7 @@ set(RTS_SOURCES
 set(RTS_HEADERS
     include/RTSCamera.h
     include/Unit.h
+    include/Building.h
     include/SelectionManager.h
     include/FlowFieldManager.h
     include/UnitSpawner.h

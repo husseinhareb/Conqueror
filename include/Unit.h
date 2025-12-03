@@ -24,8 +24,16 @@ private:
     float steering_strength = 5.0f;
     float arrival_threshold = 0.5f;
     
+    // Walking animation
+    float walk_bob_amount = 0.08f;  // Vertical bobbing
+    float walk_bob_speed = 12.0f;   // Bob frequency
+    float walk_sway_amount = 0.02f; // Side-to-side sway
+    float walk_time = 0.0f;         // Animation timer
+    float base_y_offset = 0.0f;     // Original Y offset
+    
     // State
     bool is_selected = false;
+    bool is_hovered = false;
     bool has_move_order = false;
     godot::Vector3 target_position;
     godot::Vector3 current_velocity;
@@ -36,6 +44,13 @@ private:
     
     // Visual feedback
     int unit_id = -1;
+    
+    // Unit stats (for display)
+    godot::String unit_name = "Soldier";
+    int health = 100;
+    int max_health = 100;
+    int attack_damage = 10;
+    float attack_range = 5.0f;
 
 protected:
     static void _bind_methods();
@@ -53,13 +68,19 @@ public:
     void stop_movement();
     
     void update_movement(double delta);
+    void update_walk_animation(double delta);
     godot::Vector3 calculate_steering(const godot::Vector3 &desired_velocity) const;
 
     // Selection
     void set_selected(bool selected);
     bool get_selected() const;
     
+    // Hover
+    void set_hovered(bool hovered);
+    bool get_hovered() const;
+    
     void update_selection_visual();
+    void update_hover_visual();
 
     // Getters/Setters
     void set_move_speed(float speed);
@@ -67,6 +88,21 @@ public:
     
     void set_unit_id(int id);
     int get_unit_id() const;
+    
+    void set_unit_name(const godot::String &name);
+    godot::String get_unit_name() const;
+    
+    void set_health(int hp);
+    int get_health() const;
+    
+    void set_max_health(int hp);
+    int get_max_health() const;
+    
+    void set_attack_damage(int damage);
+    int get_attack_damage() const;
+    
+    void set_attack_range(float range);
+    float get_attack_range() const;
     
     bool is_moving() const;
     godot::Vector3 get_target_position() const;
