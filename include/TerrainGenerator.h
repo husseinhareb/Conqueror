@@ -22,6 +22,7 @@
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
+#include <vector>
 
 namespace rts {
 
@@ -105,6 +106,15 @@ private:
     godot::CollisionShape3D *terrain_collision = nullptr;
     godot::MeshInstance3D *water_mesh = nullptr;
     godot::Node3D *trees_container = nullptr;
+    godot::Node3D *lakes_container = nullptr;
+    
+    // Lake data (stored during carve_lakes for water plane creation)
+    struct LakeData {
+        float world_x, world_z;
+        float radius;
+        float water_height;
+    };
+    std::vector<LakeData> lake_positions;
     
     // Tree meshes (shared across all trees)
     godot::Ref<godot::ArrayMesh> tree_mesh;

@@ -43,10 +43,10 @@ shadow_enabled = true
 map_size = 512
 tile_size = 2.0
 max_height = 25.0
-water_level = -5.0
+water_level = 1.0
 seed = 42
 mountain_frequency = 0.004
-lake_count = 3
+lake_count = 5
 
 [node name="RTSCamera" type="RTSCamera" parent="."]
 

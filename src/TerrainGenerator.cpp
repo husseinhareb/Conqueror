@@ -198,8 +198,13 @@ void TerrainGenerator::clear_terrain() {
         trees_container->queue_free();
         trees_container = nullptr;
     }
+    if (lakes_container) {
+        lakes_container->queue_free();
+        lakes_container = nullptr;
+    }
     terrain_collision = nullptr;
     heightmap.clear();
+    lake_positions.clear();
 }
 
 void TerrainGenerator::generate_base_heightmap() {
@@ -259,10 +264,14 @@ void TerrainGenerator::apply_mountains() {
 void TerrainGenerator::carve_lakes() {
     int size = config.map_size;
     float half_size = size * 0.5f;
+    float half_world = half_size * config.tile_size;
     
-    // Water level as normalized value - but we need lakes to go TO water level
-    // If water_level is negative, lakes need to carve down to 0 or slightly below
-    float lake_bottom = Math::max(0.0f, config.water_level / config.max_height);
+    // Clear previous lake data
+    lake_positions.clear();
+    
+    // Lake water level - slightly below average ground level
+    float lake_water_height = 1.0f; // Height where water surface will be
+    float lake_bottom_normalized = (lake_water_height - 0.5f) / config.max_height; // Bottom of lake
     
     // Use seed to determine lake positions - keep lakes small and scattered
     for (int i = 0; i < config.lake_count; i++) {
@@ -275,24 +284,34 @@ void TerrainGenerator::carve_lakes() {
         float lake_z = (float)(hash2 % size);
         
         // Keep lakes away from edges and center (leave center for base building)
-        lake_x = Math::clamp(lake_x, size * 0.25f, size * 0.75f);
-        lake_z = Math::clamp(lake_z, size * 0.25f, size * 0.75f);
+        lake_x = Math::clamp(lake_x, size * 0.2f, size * 0.8f);
+        lake_z = Math::clamp(lake_z, size * 0.2f, size * 0.8f);
         
         // Avoid placing lakes too close to map center (player start area)
         float center_dist = sqrt(pow(lake_x - half_size, 2) + pow(lake_z - half_size, 2));
-        if (center_dist < size * 0.2f) {
+        if (center_dist < size * 0.15f) {
             // Push lake away from center
             float angle = atan2(lake_z - half_size, lake_x - half_size);
-            lake_x = half_size + cos(angle) * size * 0.3f;
-            lake_z = half_size + sin(angle) * size * 0.3f;
+            lake_x = half_size + cos(angle) * size * 0.25f;
+            lake_z = half_size + sin(angle) * size * 0.25f;
         }
         
-        // Lake size varies but stays within limits
-        float size_variation = (float)(hash3 % 100) / 100.0f; // 0-1
-        float lake_radius = config.lake_size + size_variation * (config.lake_max_size - config.lake_size);
-        lake_radius = Math::min(lake_radius, config.lake_max_size); // Enforce max size
+        // Lake size varies - make them reasonably sized
+        float size_variation = (float)(hash3 % 100) / 100.0f;
+        float lake_radius = 15.0f + size_variation * 20.0f; // 15 to 35 tiles
         
-        // Carve the lake - create a depression at water level
+        // Convert to world coordinates and store for water plane creation
+        float world_x = (lake_x - half_size) * config.tile_size;
+        float world_z = (lake_z - half_size) * config.tile_size;
+        
+        LakeData lake;
+        lake.world_x = world_x;
+        lake.world_z = world_z;
+        lake.radius = lake_radius * config.tile_size;
+        lake.water_height = lake_water_height;
+        lake_positions.push_back(lake);
+        
+        // Carve the lake depression
         for (int z = 0; z < size; z++) {
             for (int x = 0; x < size; x++) {
                 float dx = x - lake_x;
@@ -305,14 +324,16 @@ void TerrainGenerator::carve_lakes() {
                     depth_factor = depth_factor * depth_factor; // Quadratic for smooth bowl
                     
                     float current = heightmap[z * size + x];
-                    // Target is at lake_bottom (at or slightly above water_level)
-                    float target = lake_bottom + 0.01f;
+                    // Target is below water level for lake bed
+                    float target = lake_bottom_normalized;
                     
-                    heightmap[z * size + x] = lerp(current, target, depth_factor);
+                    heightmap[z * size + x] = lerp(current, target, depth_factor * 0.8f);
                 }
             }
         }
     }
+    
+    UtilityFunctions::print("TerrainGenerator: Carved ", config.lake_count, " lakes");
 }
 
 void TerrainGenerator::smooth_terrain(int iterations) {
@@ -561,37 +582,42 @@ void TerrainGenerator::create_terrain_collision() {
 }
 
 void TerrainGenerator::create_water_plane() {
-    // Only create water plane if water level is positive (visible)
-    if (config.water_level < 0) {
-        // No global water plane - lakes will just be depressions
-        return;
-    }
+    // Create container for lake water planes
+    lakes_container = memnew(Node3D);
+    lakes_container->set_name("Lakes");
+    add_child(lakes_container);
     
-    int size = config.map_size;
-    float world_size = size * config.tile_size;
-    
-    // Create water plane mesh
-    Ref<PlaneMesh> water_plane;
-    water_plane.instantiate();
-    water_plane->set_size(Vector2(world_size, world_size));
-    water_plane->set_subdivide_width(4);
-    water_plane->set_subdivide_depth(4);
-    
-    // Create material for water
+    // Create shared water material
     Ref<StandardMaterial3D> water_mat;
     water_mat.instantiate();
-    water_mat->set_albedo(Color(0.2f, 0.4f, 0.6f, 0.7f));
+    water_mat->set_albedo(Color(0.2f, 0.45f, 0.65f, 0.75f));
     water_mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
-    water_mat->set_roughness(0.1f);
-    water_mat->set_metallic(0.3f);
+    water_mat->set_roughness(0.05f);
+    water_mat->set_metallic(0.4f);
     water_mat->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
     
-    water_mesh = memnew(MeshInstance3D);
-    water_mesh->set_mesh(water_plane);
-    water_mesh->set_surface_override_material(0, water_mat);
-    water_mesh->set_position(Vector3(0, config.water_level, 0));
-    water_mesh->set_name("WaterPlane");
-    add_child(water_mesh);
+    // Create a water plane for each lake
+    for (size_t i = 0; i < lake_positions.size(); i++) {
+        const LakeData &lake = lake_positions[i];
+        
+        // Create circular-ish water plane (use subdivided plane)
+        Ref<PlaneMesh> water_plane;
+        water_plane.instantiate();
+        float plane_size = lake.radius * 2.0f * 0.85f; // Slightly smaller than carved area
+        water_plane->set_size(Vector2(plane_size, plane_size));
+        water_plane->set_subdivide_width(8);
+        water_plane->set_subdivide_depth(8);
+        
+        MeshInstance3D *lake_mesh = memnew(MeshInstance3D);
+        lake_mesh->set_mesh(water_plane);
+        lake_mesh->set_surface_override_material(0, water_mat);
+        lake_mesh->set_position(Vector3(lake.world_x, lake.water_height, lake.world_z));
+        lake_mesh->set_name(String("Lake_") + String::num_int64(i));
+        
+        lakes_container->add_child(lake_mesh);
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Created ", lake_positions.size(), " lake water planes");
 }
 
 void TerrainGenerator::apply_terrain_material() {
