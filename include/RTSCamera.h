@@ -46,16 +46,16 @@ private:
     
     // Zoom settings
     float zoom_speed = 2.0f;
-    float min_zoom = 10.0f;
-    float max_zoom = 50.0f;
-    float current_zoom = 25.0f;
+    float min_zoom = 15.0f;
+    float max_zoom = 80.0f;
+    float current_zoom = 40.0f;
     
     // Rotation settings
     float rotation_speed = 0.005f;
     bool is_rotating = false;
     
     // Camera angle (Generals-style tilt)
-    float camera_pitch = -50.0f; // degrees
+    float camera_pitch = -55.0f; // degrees - steeper to hide edges
     float camera_yaw = 0.0f;
     
     // Target position for smooth movement
@@ -141,6 +141,7 @@ public:
     void handle_drag_pan(const godot::Vector2 &relative);
     
     void update_camera_transform();
+    void clamp_camera_to_bounds();
     void setup_custom_cursor();
     void update_cursor(double delta);
     void setup_selection_box();

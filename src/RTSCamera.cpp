@@ -79,9 +79,14 @@ void RTSCamera::_ready() {
     // Make this the current camera
     set_current(true);
     
+    // Set far plane for large terrain
+    set_far(2000.0f);
+    
     // Initialize target position at origin (ground level)
     target_position = Vector3(0, 0, 0);
-    current_zoom = 30.0f; // Start at a good viewing distance
+    current_zoom = 50.0f; // Start at a good viewing distance for large map
+    
+    UtilityFunctions::print("RTSCamera: Initial target=", target_position, " zoom=", current_zoom, " pitch=", camera_pitch);
     
     // Setup custom cursor
     setup_custom_cursor();
@@ -93,6 +98,8 @@ void RTSCamera::_ready() {
     setup_bottom_panel();
     
     update_camera_transform();
+    
+    UtilityFunctions::print("RTSCamera: Camera position=", get_global_position());
 }
 
 void RTSCamera::_process(double delta) {
@@ -325,6 +332,7 @@ void RTSCamera::handle_keyboard_movement(double delta) {
     if (direction.length_squared() > 0) {
         direction = direction.normalized();
         target_position += direction * move_speed * delta;
+        clamp_camera_to_bounds();
     }
 }
 
@@ -360,6 +368,7 @@ void RTSCamera::handle_edge_scroll(double delta) {
     if (direction.length_squared() > 0) {
         direction = direction.normalized();
         target_position += direction * edge_scroll_speed * delta;
+        clamp_camera_to_bounds();
     }
 }
 
@@ -377,9 +386,9 @@ void RTSCamera::handle_rotation(const Vector2 &relative) {
     while (camera_yaw > 360.0f) camera_yaw -= 360.0f;
     while (camera_yaw < 0.0f) camera_yaw += 360.0f;
     
-    // Rotate pitch (up/down) - clamp for Generals-style view
+    // Rotate pitch (up/down) - clamp to look more downward so edges aren't visible
     camera_pitch -= relative.y * rotation_speed * 30.0f;
-    camera_pitch = Math::clamp(camera_pitch, -80.0f, -30.0f);
+    camera_pitch = Math::clamp(camera_pitch, -80.0f, -45.0f);
     
     update_camera_transform();
 }
@@ -403,6 +412,7 @@ void RTSCamera::handle_drag_pan(const Vector2 &relative) {
     // Drag down = camera moves backward = we see more below
     target_position += right * relative.x * speed;
     target_position -= forward * relative.y * speed;
+    clamp_camera_to_bounds();
     
     // Update arrow direction based on total offset from start
     if (drag_arrow_sprite) {
@@ -466,6 +476,18 @@ void RTSCamera::update_camera_transform() {
         
         look_at(look_target, up);
     }
+}
+
+void RTSCamera::clamp_camera_to_bounds() {
+    // Keep camera within map bounds - leave margin so edges aren't visible
+    // Map is 512 * 2 = 1024 world units, centered at origin (-512 to +512)
+    // Leave a larger margin to prevent seeing the edges
+    float map_half_size = 512.0f;
+    float margin = 150.0f; // Keep camera this far from edges
+    float max_coord = map_half_size - margin;
+    
+    target_position.x = Math::clamp(target_position.x, -max_coord, max_coord);
+    target_position.z = Math::clamp(target_position.z, -max_coord, max_coord);
 }
 
 void RTSCamera::set_move_speed(float speed) {

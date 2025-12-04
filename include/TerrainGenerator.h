@@ -55,16 +55,16 @@ struct TerrainConfig {
     float mountain_frequency = 0.006f; // Mountain noise frequency
     float detail_frequency = 0.1f;   // Fine detail frequency
     
-    float base_amplitude = 0.08f;    // Base terrain contribution (very flat)
-    float mountain_amplitude = 0.5f; // Mountain contribution
-    float detail_amplitude = 0.02f;  // Detail contribution
+    float base_amplitude = 0.3f;     // Base terrain contribution (more variation)
+    float mountain_amplitude = 0.6f; // Mountain contribution
+    float detail_amplitude = 0.05f;  // Detail contribution
     
-    int octaves = 2;                 // Noise octaves for detail
-    float persistence = 0.3f;        // Octave amplitude falloff
+    int octaves = 4;                 // Noise octaves for detail
+    float persistence = 0.5f;        // Octave amplitude falloff
     float lacunarity = 2.0f;         // Octave frequency increase
     
     // Feature settings
-    float mountain_threshold = 0.75f; // Height threshold for mountains (higher = fewer)
+    float mountain_threshold = 0.55f; // Height threshold for mountains (lower = more mountains)
     float lake_threshold = 0.25f;    // Height threshold for lakes
     int lake_count = 2;              // Number of lakes to carve (fewer)
     float lake_size = 6.0f;          // Average lake radius (smaller)

@@ -136,6 +136,7 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     config.seed = seed;
     
     UtilityFunctions::print("TerrainGenerator: Starting terrain generation with seed ", seed);
+    UtilityFunctions::print("TerrainGenerator: map_size=", config.map_size, " tile_size=", config.tile_size, " max_height=", config.max_height);
     
     // Clear existing terrain
     clear_terrain();
@@ -161,7 +162,9 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
         sum_h += h;
     }
     float avg_h = sum_h / (size * size);
+    float world_size = size * config.tile_size;
     UtilityFunctions::print("TerrainGenerator: Height range: min=", min_h, " max=", max_h, " avg=", avg_h, " water_level=", config.water_level);
+    UtilityFunctions::print("TerrainGenerator: World size=", world_size, " (from -", world_size/2, " to +", world_size/2, ")");
     
     // Create visual mesh and collision
     create_terrain_mesh();
@@ -438,28 +441,34 @@ void TerrainGenerator::create_terrain_mesh() {
             float u = (float)x / (size - 1);
             float v = (float)z / (size - 1);
             
-            // Calculate normal
-            Vector3 normal = get_normal_at(wx + half_world, wz + half_world);
+            // Calculate normal using world coordinates (wx, wz are already world coords)
+            Vector3 normal = get_normal_at(wx, wz);
             
             // Color based on height (for basic visualization)
+            // Heights typically range from ~0.5 to ~7, so use appropriate thresholds
             Color color;
-            float normalized_height = height / config.max_height;
             if (height <= config.water_level) {
-                color = Color(0.1f, 0.2f, 0.6f); // Deep water blue
-            } else if (normalized_height < 0.15f) {
-                // Low ground - bright grass green
-                color = Color(0.2f, 0.6f, 0.15f);
-            } else if (normalized_height < 0.4f) {
-                // Medium ground - grass/dirt mix
-                color = Color(0.3f, 0.5f, 0.2f);
-            } else if (normalized_height < 0.65f) {
-                // Higher ground - dirt/rock
-                color = Color(0.5f, 0.4f, 0.3f);
-            } else if (normalized_height < 0.85f) {
-                // Mountain - rock gray
+                color = Color(0.1f, 0.3f, 0.6f); // Deep water blue
+            } else if (height < 1.5f) {
+                // Beach/low ground - sandy grass
+                color = Color(0.45f, 0.55f, 0.25f);
+            } else if (height < 3.0f) {
+                // Low grass - bright green
+                color = Color(0.25f, 0.6f, 0.15f);
+            } else if (height < 5.0f) {
+                // Medium grass - darker green
+                color = Color(0.2f, 0.5f, 0.12f);
+            } else if (height < 7.0f) {
+                // High grass/dirt transition
+                color = Color(0.35f, 0.45f, 0.2f);
+            } else if (height < 10.0f) {
+                // Rocky dirt
+                color = Color(0.5f, 0.42f, 0.3f);
+            } else if (height < 14.0f) {
+                // Mountain rock
                 color = Color(0.5f, 0.5f, 0.5f);
             } else {
-                // Peak - snow white
+                // Snow peaks
                 color = Color(0.95f, 0.95f, 0.95f);
             }
             
@@ -470,20 +479,20 @@ void TerrainGenerator::create_terrain_mesh() {
         }
     }
     
-    // Create triangles
+    // Create triangles - counter-clockwise winding for front faces (looking down from +Y)
     for (int z = 0; z < size - 1; z++) {
         for (int x = 0; x < size - 1; x++) {
             int i = z * size + x;
             
-            // First triangle
+            // First triangle (bottom-left triangle of quad)
             st->add_index(i);
-            st->add_index(i + size);
             st->add_index(i + 1);
+            st->add_index(i + size);
             
-            // Second triangle
+            // Second triangle (top-right triangle of quad)
             st->add_index(i + 1);
-            st->add_index(i + size);
             st->add_index(i + size + 1);
+            st->add_index(i + size);
         }
     }
     
@@ -584,6 +593,7 @@ void TerrainGenerator::apply_terrain_material() {
     mat->set_flag(StandardMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
     mat->set_roughness(0.9f);
     mat->set_metallic(0.0f);
+    mat->set_cull_mode(StandardMaterial3D::CULL_DISABLED); // Show both sides
     
     terrain_mesh->set_surface_override_material(0, mat);
 }
