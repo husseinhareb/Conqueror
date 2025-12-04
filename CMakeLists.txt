@@ -53,6 +53,7 @@ set(RTS_SOURCES
     src/Vehicle.cpp
     src/Bulldozer.cpp
     src/FloorSnapper.cpp
+    src/TerrainGenerator.cpp
     src/SelectionManager.cpp
     src/FlowFieldManager.cpp
     src/UnitSpawner.cpp
@@ -68,6 +69,7 @@ set(RTS_HEADERS
     include/Vehicle.h
     include/Bulldozer.h
     include/FloorSnapper.h
+    include/TerrainGenerator.h
     include/SelectionManager.h
     include/FlowFieldManager.h
     include/UnitSpawner.h

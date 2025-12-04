@@ -349,25 +349,31 @@ Building* Bulldozer::spawn_building(BuildingType type, const Vector3 &position) 
         }
     }
     
-    // Add to scene FIRST, then set position (start high, snap down)
+    // Add to scene
     get_tree()->get_root()->add_child(building);
+    
+    // Try to get terrain height directly from TerrainGenerator
+    float terrain_y = position.y;
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (terrain_node) {
+        UtilityFunctions::print("Building: Found TerrainGenerator node");
+        // Call get_height_at on the terrain generator
+        Variant height_result = terrain_node->call("get_height_at", position.x, position.z);
+        UtilityFunctions::print("Building: get_height_at returned type ", height_result.get_type(), " value ", height_result);
+        if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+            terrain_y = (float)height_result;
+            UtilityFunctions::print("Building: Got terrain height ", terrain_y, " at (", position.x, ", ", position.z, ")");
+        }
+    } else {
+        UtilityFunctions::print("Building: TerrainGenerator node NOT FOUND!");
+    }
+    
+    // Set position on terrain
     Vector3 spawn_pos = position;
-    spawn_pos.y = 5.0f; // Start high
+    spawn_pos.y = terrain_y;
     building->set_global_position(spawn_pos);
     
-    // Snap building to floor - use multi-ray for wide base
-    FloorSnapConfig config;
-    config.floor_collision_mask = 1; // Ground layer
-    config.raycast_start_height = 10.0f;
-    config.raycast_max_distance = 50.0f;
-    config.ground_offset = 0.0f;
-    config.use_multi_ray = true;
-    config.multi_ray_spread = building->get_building_size() * 0.4f;
-    
-    FloorSnapResult result = FloorSnapper::snap_to_floor(building, config);
-    if (result.success) {
-        UtilityFunctions::print("Building snapped to floor at Y=", result.final_y);
-    }
+    UtilityFunctions::print("Building spawned at Y=", spawn_pos.y);
     
     return building;
 }

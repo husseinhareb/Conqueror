@@ -19,8 +19,9 @@
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
- #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <vector>
 
 namespace rts {
 
@@ -62,6 +63,7 @@ private:
     
     // Custom cursor
     godot::Sprite2D *cursor_sprite = nullptr;
+    godot::Sprite2D *drag_arrow_sprite = nullptr;
     godot::CanvasLayer *cursor_layer = nullptr;
     godot::Vector2 cursor_position = godot::Vector2(0, 0);
     float cursor_speed = 800.0f;
@@ -70,6 +72,7 @@ private:
     // Cursor textures
     godot::Ref<godot::Texture2D> cursor_normal_texture;
     godot::Ref<godot::Texture2D> cursor_move_texture;
+    godot::Ref<godot::Texture2D> drag_arrow_texture;
     bool using_move_cursor = false;
     
     // Selection box
@@ -80,6 +83,7 @@ private:
     // Unit hover and selection
     Unit *hovered_unit = nullptr;
     Unit *selected_unit = nullptr;
+    std::vector<Unit*> selected_units;
     
     // Building hover and selection
     Building *hovered_building = nullptr;
@@ -88,6 +92,7 @@ private:
     // Bulldozer/Vehicle hover and selection
     Bulldozer *hovered_bulldozer = nullptr;
     Bulldozer *selected_bulldozer = nullptr;
+    std::vector<Bulldozer*> selected_bulldozers;
     
     // Build mode state
     bool is_placing_building = false;
@@ -153,11 +158,17 @@ public:
     void select_building(Building *building);
     void select_bulldozer(Bulldozer *bulldozer);
     void deselect_all();
+    void perform_box_selection();
+    bool is_position_in_selection_box(const godot::Vector2 &screen_pos);
     void update_unit_info_panel();
     void update_cursor_mode();
     void create_move_cursor_texture();
     godot::Vector3 raycast_ground(const godot::Vector2 &screen_pos);
     void issue_move_order(const godot::Vector3 &target);
+    
+    // Panel interaction
+    bool is_cursor_over_panel() const;
+    bool handle_panel_click();
     
     // Build system
     void setup_build_buttons();

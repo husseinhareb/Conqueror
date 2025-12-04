@@ -33,6 +33,8 @@
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <functional>
+
 using namespace godot;
 
 namespace rts {
@@ -130,11 +132,24 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
     // Mouse button events (zoom, rotation toggle, selection)
     Ref<InputEventMouseButton> mouse_button = event;
     if (mouse_button.is_valid()) {
+        // Zoom always works
         if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_WHEEL_UP) {
             handle_zoom(-1.0f);
+            return;
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_WHEEL_DOWN) {
             handle_zoom(1.0f);
-        } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_MIDDLE) {
+            return;
+        }
+        
+        // Block all other mouse interactions when cursor is over panel
+        if (is_cursor_over_panel()) {
+            if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_LEFT && mouse_button->is_pressed()) {
+                handle_panel_click();
+            }
+            return; // Block everything else when over panel
+        }
+        
+        if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_MIDDLE) {
             is_rotating = mouse_button->is_pressed();
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_RIGHT) {
             // Right-click: drag pan or cancel/deselect
@@ -142,6 +157,16 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                 // Start drag panning
                 is_drag_panning = true;
                 drag_start_position = cursor_position;
+                
+                // Show arrow at start position, hide cursor
+                if (drag_arrow_sprite) {
+                    drag_arrow_sprite->set_visible(true);
+                    drag_arrow_sprite->set_position(drag_start_position);
+                    drag_arrow_sprite->set_rotation(0);
+                }
+                if (cursor_sprite) {
+                    cursor_sprite->set_visible(false);
+                }
             } else {
                 // Right-click released
                 // Check if mouse moved significantly during drag
@@ -155,59 +180,17 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                     }
                 }
                 is_drag_panning = false;
+                
+                // Hide arrow, show cursor
+                if (drag_arrow_sprite) {
+                    drag_arrow_sprite->set_visible(false);
+                }
+                if (cursor_sprite) {
+                    cursor_sprite->set_visible(true);
+                }
             }
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_LEFT) {
             if (mouse_button->is_pressed()) {
-                // Check if cursor is over the bottom panel area - don't process game clicks
-                Viewport *viewport = get_viewport();
-                if (viewport && bottom_panel_expanded) {
-                    Vector2 viewport_size = viewport->get_visible_rect().size;
-                    float panel_top = viewport_size.y * (1.0f - bottom_panel_height_percent);
-                    if (cursor_position.y >= panel_top) {
-                        // Cursor is over the panel area
-                        // Check if clicking on toggle button
-                        if (bottom_panel_toggle_btn) {
-                            Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
-                            if (btn_rect.has_point(cursor_position)) {
-                                toggle_bottom_panel();
-                                return;
-                            }
-                        }
-                        
-                        // Check build buttons
-                        if (build_power_btn && build_power_btn->is_visible()) {
-                            Rect2 btn_rect = build_power_btn->get_global_rect();
-                            if (btn_rect.has_point(cursor_position)) {
-                                on_build_power_pressed();
-                                return;
-                            }
-                        }
-                        if (build_barracks_btn && build_barracks_btn->is_visible()) {
-                            Rect2 btn_rect = build_barracks_btn->get_global_rect();
-                            if (btn_rect.has_point(cursor_position)) {
-                                on_build_barracks_pressed();
-                                return;
-                            }
-                        }
-                        if (build_bulldozer_btn && build_bulldozer_btn->is_visible()) {
-                            Rect2 btn_rect = build_bulldozer_btn->get_global_rect();
-                            if (btn_rect.has_point(cursor_position)) {
-                                on_build_bulldozer_pressed();
-                                return;
-                            }
-                        }
-                        if (train_unit_btn && train_unit_btn->is_visible()) {
-                            Rect2 btn_rect = train_unit_btn->get_global_rect();
-                            if (btn_rect.has_point(cursor_position)) {
-                                on_train_unit_pressed();
-                                return;
-                            }
-                        }
-                        // Click is on panel but not on a button - ignore it
-                        return;
-                    }
-                }
-                
                 // Check if clicking on toggle button (when collapsed, it's at bottom)
                 if (bottom_panel_toggle_btn) {
                     Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
@@ -224,7 +207,11 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                 }
                 
                 // If a unit is selected, left-click issues move order (unless clicking another unit/building/bulldozer)
-                if (selected_unit) {
+                bool has_unit_selection = selected_unit || !selected_units.empty();
+                bool has_bulldozer_selection = selected_bulldozer || !selected_bulldozers.empty();
+                bool has_any_selection = has_unit_selection || has_bulldozer_selection;
+                
+                if (has_any_selection) {
                     Unit *clicked_unit = raycast_for_unit(cursor_position);
                     if (clicked_unit) {
                         select_unit(clicked_unit);
@@ -243,35 +230,9 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                         return;
                     }
                     
+                    // Issue move order to all selected units and bulldozers
                     Vector3 ground_pos = raycast_ground(cursor_position);
                     issue_move_order(ground_pos);
-                    return;
-                }
-                
-                // If bulldozer selected, issue move order
-                if (selected_bulldozer && !selected_bulldozer->get_is_constructing()) {
-                    Unit *clicked_unit = raycast_for_unit(cursor_position);
-                    if (clicked_unit) {
-                        select_unit(clicked_unit);
-                        return;
-                    }
-                    
-                    Bulldozer *clicked_bulldozer = raycast_for_bulldozer(cursor_position);
-                    if (clicked_bulldozer && clicked_bulldozer != selected_bulldozer) {
-                        select_bulldozer(clicked_bulldozer);
-                        return;
-                    }
-                    
-                    Building *clicked_building = raycast_for_building(cursor_position);
-                    if (clicked_building) {
-                        select_building(clicked_building);
-                        return;
-                    }
-                    
-                    // Move bulldozer
-                    Vector3 ground_pos = raycast_ground(cursor_position);
-                    selected_bulldozer->move_to(ground_pos);
-                    UtilityFunctions::print("Bulldozer move order to: ", ground_pos);
                     return;
                 }
                 
@@ -303,10 +264,15 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                     selection_box->set_size(Vector2(0, 0));
                 }
             } else {
-                // End selection
+                // End selection - perform box selection
                 is_selecting = false;
                 if (selection_box) {
                     selection_box->set_visible(false);
+                    // Perform box selection if the box has some size
+                    Vector2 box_size = selection_box->get_size();
+                    if (box_size.x > 5.0f || box_size.y > 5.0f) {
+                        perform_box_selection();
+                    }
                 }
             }
         }
@@ -419,8 +385,11 @@ void RTSCamera::handle_rotation(const Vector2 &relative) {
 }
 
 void RTSCamera::handle_drag_pan(const Vector2 &relative) {
-    // Right-click drag panning - faster camera movement
-    // Convert mouse movement to camera-relative world movement
+    // Right-click drag panning - "grab and drag" style
+    // When you drag the mouse, it's like grabbing the map and pulling it
+    // So dragging right makes the camera move right (map slides left under cursor)
+    // Dragging down makes the camera move down/backward (map slides up)
+    
     float yaw_rad = Math::deg_to_rad(camera_yaw);
     Vector3 forward = Vector3(-Math::sin(yaw_rad), 0, -Math::cos(yaw_rad));
     Vector3 right = Vector3(Math::cos(yaw_rad), 0, -Math::sin(yaw_rad));
@@ -429,11 +398,29 @@ void RTSCamera::handle_drag_pan(const Vector2 &relative) {
     float zoom_factor = current_zoom / 25.0f;  // Normalize to default zoom
     float speed = drag_pan_speed * drag_pan_multiplier * zoom_factor;
     
-    // Move camera based on mouse drag direction
-    // Drag right = camera moves left (world moves right under cursor)
-    // Drag down = camera moves up (world moves down under cursor)
-    target_position -= right * relative.x * speed;
-    target_position += forward * relative.y * speed;
+    // Move camera in the same direction as mouse drag
+    // Drag right = camera moves right = we see more to the right
+    // Drag down = camera moves backward = we see more below
+    target_position += right * relative.x * speed;
+    target_position -= forward * relative.y * speed;
+    
+    // Update arrow direction based on total offset from start
+    if (drag_arrow_sprite) {
+        Vector2 total_offset = cursor_position - drag_start_position;
+        float dist = total_offset.length();
+        
+        if (dist > 15.0f) {
+            // Arrow points DOWN at rotation 0 (positive Y direction)
+            // atan2(x, y) gives angle from Y axis
+            // Negate both to point in direction of mouse movement
+            float angle = atan2(-total_offset.x, -total_offset.y);
+            
+            // Snap to 8 directions (every 45 degrees)
+            float snap = Math_PI / 4.0f;
+            float snapped = round(angle / snap) * snap;
+            drag_arrow_sprite->set_rotation(snapped);
+        }
+    }
     
     update_camera_transform();
 }
@@ -571,6 +558,34 @@ void RTSCamera::setup_custom_cursor() {
     // Create the move cursor texture (+ crosshair)
     create_move_cursor_texture();
     
+    // Create drag arrow sprite
+    drag_arrow_sprite = memnew(Sprite2D);
+    cursor_layer->add_child(drag_arrow_sprite);
+    
+    // Load arrow image or create fallback
+    Ref<Image> arrow_img = Image::create(1, 1, false, Image::FORMAT_RGBA8);
+    if (arrow_img->load("res://assets/down-arrow.png") == OK) {
+        drag_arrow_texture = ImageTexture::create_from_image(arrow_img);
+        Vector2 arrow_size = arrow_img->get_size();
+        float scale = 48.0f / Math::max(arrow_size.x, arrow_size.y);
+        drag_arrow_sprite->set_scale(Vector2(scale, scale));
+    } else {
+        // Fallback arrow
+        Ref<Image> img = Image::create(32, 32, false, Image::FORMAT_RGBA8);
+        img->fill(Color(0, 0, 0, 0));
+        for (int y = 0; y < 20; y++) {
+            img->set_pixel(15, y, Color(1, 1, 1, 1));
+            img->set_pixel(16, y, Color(1, 1, 1, 1));
+        }
+        for (int i = 0; i < 8; i++) {
+            img->set_pixel(15 - i, 12 + i, Color(1, 1, 1, 1));
+            img->set_pixel(16 + i, 12 + i, Color(1, 1, 1, 1));
+        }
+        drag_arrow_texture = ImageTexture::create_from_image(img);
+    }
+    drag_arrow_sprite->set_texture(drag_arrow_texture);
+    drag_arrow_sprite->set_visible(false);
+    
     cursor_sprite->set_position(cursor_position);
     cursor_sprite->set_offset(Vector2(0, 0)); // Top-left is hotspot
     
@@ -592,8 +607,8 @@ void RTSCamera::update_cursor(double delta) {
     Vector2 mouse_delta = current_mouse - last_mouse;
     last_mouse = current_mouse;
     
-    // Don't move custom cursor while rotating camera or drag panning
-    if (!is_rotating && !is_drag_panning) {
+    // Don't move custom cursor while rotating camera
+    if (!is_rotating) {
         // Apply movement to cursor
         cursor_position += mouse_delta;
         
@@ -601,17 +616,22 @@ void RTSCamera::update_cursor(double delta) {
         cursor_position.x = Math::clamp(cursor_position.x, 0.0f, viewport_size.x);
         cursor_position.y = Math::clamp(cursor_position.y, 0.0f, viewport_size.y);
         
-        // Update cursor sprite position
-        cursor_sprite->set_position(cursor_position);
-        
-        // Warp mouse to center to allow continuous movement detection
-        Vector2 center = viewport_size / 2.0f;
-        if (current_mouse.distance_to(center) > 100.0f) {
-            input->warp_mouse(center);
-            last_mouse = center;
+        // Update cursor sprite position (only if not drag panning - cursor is hidden during drag)
+        if (!is_drag_panning) {
+            cursor_sprite->set_position(cursor_position);
+            
+            // Warp mouse to center to allow continuous movement detection
+            Vector2 center = viewport_size / 2.0f;
+            if (current_mouse.distance_to(center) > 100.0f) {
+                input->warp_mouse(center);
+                last_mouse = center;
+            }
+        } else {
+            // During drag panning, just track mouse without warping
+            last_mouse = current_mouse;
         }
     } else {
-        // While rotating or drag panning, just track the mouse position without warping
+        // While rotating, just track the mouse position without warping
         last_mouse = current_mouse;
     }
 }
@@ -685,7 +705,6 @@ void RTSCamera::setup_bottom_panel() {
     
     // Create title label
     bottom_panel_title = memnew(Label);
-    bottom_panel_title->set_text("  COMMAND PANEL");
     bottom_panel_title->set_anchor(Side::SIDE_LEFT, 0.0f);
     bottom_panel_title->set_anchor(Side::SIDE_RIGHT, 0.5f);
     bottom_panel_title->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
@@ -700,7 +719,7 @@ void RTSCamera::setup_bottom_panel() {
     
     // Create toggle button in the center top of the panel
     bottom_panel_toggle_btn = memnew(Button);
-    bottom_panel_toggle_btn->set_text("▼ Hide");
+    bottom_panel_toggle_btn->set_text("Hide");
     bottom_panel_toggle_btn->set_anchor(Side::SIDE_LEFT, 0.5f);
     bottom_panel_toggle_btn->set_anchor(Side::SIDE_RIGHT, 0.5f);
     bottom_panel_toggle_btn->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
@@ -832,9 +851,8 @@ void RTSCamera::toggle_bottom_panel() {
         bottom_panel_toggle_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
         bottom_panel_toggle_btn->set_offset(Side::SIDE_TOP, 3);
         bottom_panel_toggle_btn->set_offset(Side::SIDE_BOTTOM, bottom_panel_header_height - 3);
-        bottom_panel_toggle_btn->set_text("▼ Hide");
+        bottom_panel_toggle_btn->set_text("Hide");
         
-        bottom_panel_title->set_text("  COMMAND PANEL");
     } else {
         // Collapse - only show header at very bottom
         bottom_panel->set_visible(false);
@@ -857,9 +875,7 @@ void RTSCamera::toggle_bottom_panel() {
         bottom_panel_toggle_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f);
         bottom_panel_toggle_btn->set_offset(Side::SIDE_TOP, -bottom_panel_header_height + 3);
         bottom_panel_toggle_btn->set_offset(Side::SIDE_BOTTOM, -3);
-        bottom_panel_toggle_btn->set_text("▲ Show");
-        
-        bottom_panel_title->set_text("  COMMAND PANEL");
+        bottom_panel_toggle_btn->set_text("Show");
     }
 }
 
@@ -885,8 +901,25 @@ void RTSCamera::update_bottom_panel_size() {
 }
 
 void RTSCamera::update_hover_detection() {
-    // Don't do hover detection while rotating or selecting
-    if (is_rotating || is_selecting) return;
+    // Don't do hover detection while rotating, selecting, or over panel
+    if (is_rotating || is_selecting || is_cursor_over_panel()) {
+        // Clear any existing hover states when over panel
+        if (is_cursor_over_panel()) {
+            if (hovered_bulldozer) {
+                hovered_bulldozer->set_hovered(false);
+                hovered_bulldozer = nullptr;
+            }
+            if (hovered_unit) {
+                hovered_unit->set_hovered(false);
+                hovered_unit = nullptr;
+            }
+            if (hovered_building) {
+                hovered_building->set_hovered(false);
+                hovered_building = nullptr;
+            }
+        }
+        return;
+    }
     
     // Raycast to find what's under cursor (in priority order)
     Bulldozer *new_hovered_bulldozer = raycast_for_bulldozer(cursor_position);
@@ -1072,6 +1105,7 @@ void RTSCamera::select_building(Building *building) {
 }
 
 void RTSCamera::deselect_all() {
+    // Deselect single selections
     if (selected_unit) {
         selected_unit->set_selected(false);
         selected_unit = nullptr;
@@ -1084,6 +1118,163 @@ void RTSCamera::deselect_all() {
         selected_bulldozer->set_selected(false);
         selected_bulldozer = nullptr;
     }
+    
+    // Deselect all units in multi-selection
+    for (Unit *unit : selected_units) {
+        if (unit) {
+            unit->set_selected(false);
+        }
+    }
+    selected_units.clear();
+    
+    // Deselect all bulldozers in multi-selection
+    for (Bulldozer *bulldozer : selected_bulldozers) {
+        if (bulldozer) {
+            bulldozer->set_selected(false);
+        }
+    }
+    selected_bulldozers.clear();
+}
+
+bool RTSCamera::is_position_in_selection_box(const Vector2 &screen_pos) {
+    float left = Math::min(selection_start.x, cursor_position.x);
+    float right = Math::max(selection_start.x, cursor_position.x);
+    float top = Math::min(selection_start.y, cursor_position.y);
+    float bottom = Math::max(selection_start.y, cursor_position.y);
+    
+    return screen_pos.x >= left && screen_pos.x <= right &&
+           screen_pos.y >= top && screen_pos.y <= bottom;
+}
+
+void RTSCamera::perform_box_selection() {
+    // Clear previous selection
+    deselect_all();
+    
+    // Get the scene tree root to find all units and bulldozers
+    Node *root = get_tree()->get_root();
+    if (!root) return;
+    
+    // Find all units and bulldozers recursively
+    TypedArray<Node> all_nodes = root->get_children();
+    
+    // Helper lambda to recursively find all nodes
+    std::vector<Node*> nodes_to_check;
+    std::function<void(Node*)> collect_nodes = [&](Node *node) {
+        if (!node) return;
+        nodes_to_check.push_back(node);
+        TypedArray<Node> children = node->get_children();
+        for (int i = 0; i < children.size(); i++) {
+            collect_nodes(Object::cast_to<Node>(children[i]));
+        }
+    };
+    
+    for (int i = 0; i < all_nodes.size(); i++) {
+        collect_nodes(Object::cast_to<Node>(all_nodes[i]));
+    }
+    
+    // Check each node
+    for (Node *node : nodes_to_check) {
+        // Check if it's a Unit
+        Unit *unit = Object::cast_to<Unit>(node);
+        if (unit) {
+            // Project unit's world position to screen
+            Vector3 world_pos = unit->get_global_position();
+            Vector2 screen_pos = unproject_position(world_pos);
+            
+            // Check if the screen position is within the selection box
+            if (is_position_in_selection_box(screen_pos)) {
+                unit->set_selected(true);
+                selected_units.push_back(unit);
+            }
+            continue;
+        }
+        
+        // Check if it's a Bulldozer
+        Bulldozer *bulldozer = Object::cast_to<Bulldozer>(node);
+        if (bulldozer) {
+            // Project bulldozer's world position to screen
+            Vector3 world_pos = bulldozer->get_global_position();
+            Vector2 screen_pos = unproject_position(world_pos);
+            
+            // Check if the screen position is within the selection box
+            if (is_position_in_selection_box(screen_pos)) {
+                bulldozer->set_selected(true);
+                selected_bulldozers.push_back(bulldozer);
+            }
+        }
+    }
+    
+    // Set single selection pointers if only one is selected
+    if (selected_units.size() == 1) {
+        selected_unit = selected_units[0];
+    }
+    if (selected_bulldozers.size() == 1) {
+        selected_bulldozer = selected_bulldozers[0];
+    }
+    
+    int total_selected = selected_units.size() + selected_bulldozers.size();
+    if (total_selected > 0) {
+        UtilityFunctions::print("Box selected ", total_selected, " units/vehicles");
+    }
+}
+
+bool RTSCamera::is_cursor_over_panel() const {
+    if (!bottom_panel_expanded) return false;
+    
+    Viewport *viewport = get_viewport();
+    if (!viewport) return false;
+    
+    Vector2 viewport_size = viewport->get_visible_rect().size;
+    float panel_top = viewport_size.y * (1.0f - bottom_panel_height_percent);
+    
+    return cursor_position.y >= panel_top;
+}
+
+bool RTSCamera::handle_panel_click() {
+    // Returns true if click was handled by panel (should block game interaction)
+    if (!is_cursor_over_panel()) return false;
+    
+    // Check toggle button
+    if (bottom_panel_toggle_btn) {
+        Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
+        if (btn_rect.has_point(cursor_position)) {
+            toggle_bottom_panel();
+            return true;
+        }
+    }
+    
+    // Check build buttons
+    if (build_power_btn && build_power_btn->is_visible()) {
+        Rect2 btn_rect = build_power_btn->get_global_rect();
+        if (btn_rect.has_point(cursor_position)) {
+            on_build_power_pressed();
+            return true;
+        }
+    }
+    if (build_barracks_btn && build_barracks_btn->is_visible()) {
+        Rect2 btn_rect = build_barracks_btn->get_global_rect();
+        if (btn_rect.has_point(cursor_position)) {
+            on_build_barracks_pressed();
+            return true;
+        }
+    }
+    if (build_bulldozer_btn && build_bulldozer_btn->is_visible()) {
+        Rect2 btn_rect = build_bulldozer_btn->get_global_rect();
+        if (btn_rect.has_point(cursor_position)) {
+            on_build_bulldozer_pressed();
+            return true;
+        }
+    }
+    if (train_unit_btn && train_unit_btn->is_visible()) {
+        Rect2 btn_rect = train_unit_btn->get_global_rect();
+        if (btn_rect.has_point(cursor_position)) {
+            on_train_unit_pressed();
+            return true;
+        }
+    }
+    
+    // Click was on panel but not on any button - still block game interaction
+    return true;
 }
 
 void RTSCamera::update_unit_info_panel() {
@@ -1317,10 +1508,39 @@ Vector3 RTSCamera::raycast_ground(const Vector2 &screen_pos) {
 }
 
 void RTSCamera::issue_move_order(const Vector3 &target) {
-    if (!selected_unit) return;
+    int move_count = 0;
     
-    selected_unit->set_move_target(target);
-    UtilityFunctions::print("Move order issued to position: (", target.x, ", ", target.y, ", ", target.z, ")");
+    // Move single selected unit
+    if (selected_unit) {
+        selected_unit->set_move_target(target);
+        move_count++;
+    }
+    
+    // Move all multi-selected units
+    for (Unit *unit : selected_units) {
+        if (unit && unit != selected_unit) {
+            unit->set_move_target(target);
+            move_count++;
+        }
+    }
+    
+    // Move single selected bulldozer
+    if (selected_bulldozer) {
+        selected_bulldozer->move_to(target);
+        move_count++;
+    }
+    
+    // Move all multi-selected bulldozers
+    for (Bulldozer *bulldozer : selected_bulldozers) {
+        if (bulldozer && bulldozer != selected_bulldozer) {
+            bulldozer->move_to(target);
+            move_count++;
+        }
+    }
+    
+    if (move_count > 0) {
+        UtilityFunctions::print("Move order issued to ", move_count, " units at position: (", target.x, ", ", target.y, ", ", target.z, ")");
+    }
 }
 
 Bulldozer* RTSCamera::raycast_for_bulldozer(const Vector2 &screen_pos) {

@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3 uid="uid://bvq3xj5hs2pmd"]
+[gd_scene load_steps=4 format=3 uid="uid://bvq3xj5hs2pmd"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
 sky_top_color = Color(0.4, 0.6, 0.8, 1)
@@ -16,15 +16,6 @@ ambient_light_source = 2
 ambient_light_color = Color(0.8, 0.8, 0.9, 1)
 ambient_light_energy = 0.5
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
-size = Vector3(200, 1, 200)
-
-[sub_resource type="BoxMesh" id="BoxMesh_ground"]
-size = Vector3(200, 1, 200)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
-albedo_color = Color(0.35, 0.45, 0.3, 1)
-
 [node name="Main" type="Node3D"]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
@@ -36,18 +27,14 @@ light_color = Color(1, 0.98, 0.9, 1)
 light_energy = 1.2
 shadow_enabled = true
 
-[node name="Ground" type="StaticBody3D" parent="."]
-collision_layer = 1
-collision_mask = 0
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
-shape = SubResource("BoxShape3D_ground")
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
-mesh = SubResource("BoxMesh_ground")
-surface_material_override/0 = SubResource("StandardMaterial3D_ground")
+[node name="TerrainGenerator" type="TerrainGenerator" parent="."]
+map_size = 128
+tile_size = 2.0
+max_height = 20.0
+water_level = -5.0
+seed = 42
+mountain_frequency = 0.008
+lake_count = 1
 
 [node name="RTSCamera" type="RTSCamera" parent="."]
 
@@ -63,7 +50,7 @@ auto_spawn_count = 0
 [node name="GameManager" type="GameManager" parent="."]
 
 [node name="CommandCenter" type="Building" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 5)
 collision_layer = 4
 collision_mask = 1
 building_name = "Command Center"
