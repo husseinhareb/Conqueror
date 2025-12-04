@@ -20,6 +20,8 @@ class Building : public godot::StaticBody3D {
 private:
     // Building properties
     godot::String building_name = "Building";
+    godot::String model_path = "";  // Path to .glb model (empty = use default box)
+    float model_scale = 1.0f;        // Scale for the loaded model
     int health = 500;
     int max_health = 500;
     float building_size = 4.0f;  // Size of the square base
@@ -39,6 +41,7 @@ private:
     // Child nodes (created at runtime)
     godot::MeshInstance3D *mesh_instance = nullptr;
     godot::CollisionShape3D *collision_shape = nullptr;
+    godot::Node3D *model_instance = nullptr;  // For loaded 3D models
 
 protected:
     static void _bind_methods();
@@ -52,7 +55,10 @@ public:
     
     // Setup
     void create_building_mesh();
+    void load_model();
     void setup_collision();
+    void find_mesh_instances_recursive(godot::Node *node);
+    void apply_selection_to_model(godot::Node *node, bool selected, bool hovered);
 
     // Selection
     void set_selected(bool selected);
@@ -86,6 +92,12 @@ public:
     
     void set_armor(int value);
     int get_armor() const;
+    
+    void set_model_path(const godot::String &path);
+    godot::String get_model_path() const;
+    
+    void set_model_scale(float scale);
+    float get_model_scale() const;
 
     // Signals
     // signal building_selected(building: Building)

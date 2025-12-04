@@ -25,6 +25,8 @@
 namespace rts {
 
 class Unit; // Forward declaration
+class Building; // Forward declaration
+class Bulldozer; // Forward declaration
 
 class RTSCamera : public godot::Camera3D {
     GDCLASS(RTSCamera, godot::Camera3D)
@@ -34,6 +36,12 @@ private:
     float move_speed = 20.0f;
     float edge_scroll_margin = 50.0f;
     float edge_scroll_speed = 25.0f;
+    
+    // Right-click drag panning
+    bool is_drag_panning = false;
+    godot::Vector2 drag_start_position;
+    float drag_pan_speed = 0.08f;  // Speed multiplier for drag panning (reduced)
+    float drag_pan_multiplier = 1.5f;  // How much faster than edge scroll
     
     // Zoom settings
     float zoom_speed = 2.0f;
@@ -73,6 +81,25 @@ private:
     Unit *hovered_unit = nullptr;
     Unit *selected_unit = nullptr;
     
+    // Building hover and selection
+    Building *hovered_building = nullptr;
+    Building *selected_building = nullptr;
+    
+    // Bulldozer/Vehicle hover and selection
+    Bulldozer *hovered_bulldozer = nullptr;
+    Bulldozer *selected_bulldozer = nullptr;
+    
+    // Build mode state
+    bool is_placing_building = false;
+    int placing_building_type = -1;  // 0=PowerPlant, 1=Barracks
+    
+    // Build buttons in panel
+    godot::Button *build_power_btn = nullptr;
+    godot::Button *build_barracks_btn = nullptr;
+    godot::Button *build_bulldozer_btn = nullptr;
+    godot::Button *train_unit_btn = nullptr;
+    godot::Label *construction_progress_label = nullptr;
+    
     // Bottom panel
     godot::Control *bottom_panel_container = nullptr;
     godot::ColorRect *bottom_panel = nullptr;
@@ -106,6 +133,7 @@ public:
     void handle_edge_scroll(double delta);
     void handle_zoom(float direction);
     void handle_rotation(const godot::Vector2 &relative);
+    void handle_drag_pan(const godot::Vector2 &relative);
     
     void update_camera_transform();
     void setup_custom_cursor();
@@ -119,12 +147,28 @@ public:
     // Hover and selection
     void update_hover_detection();
     Unit* raycast_for_unit(const godot::Vector2 &screen_pos);
+    Building* raycast_for_building(const godot::Vector2 &screen_pos);
+    Bulldozer* raycast_for_bulldozer(const godot::Vector2 &screen_pos);
     void select_unit(Unit *unit);
+    void select_building(Building *building);
+    void select_bulldozer(Bulldozer *bulldozer);
+    void deselect_all();
     void update_unit_info_panel();
     void update_cursor_mode();
     void create_move_cursor_texture();
     godot::Vector3 raycast_ground(const godot::Vector2 &screen_pos);
     void issue_move_order(const godot::Vector3 &target);
+    
+    // Build system
+    void setup_build_buttons();
+    void update_build_buttons();
+    void on_build_power_pressed();
+    void on_build_barracks_pressed();
+    void on_build_bulldozer_pressed();
+    void on_train_unit_pressed();
+    void start_building_placement(int type);
+    void cancel_building_placement();
+    void confirm_building_placement();
 
     // Getters/Setters
     void set_move_speed(float speed);

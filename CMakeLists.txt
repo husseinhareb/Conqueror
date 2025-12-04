@@ -50,6 +50,9 @@ set(RTS_SOURCES
     src/RTSCamera.cpp
     src/Unit.cpp
     src/Building.cpp
+    src/Vehicle.cpp
+    src/Bulldozer.cpp
+    src/FloorSnapper.cpp
     src/SelectionManager.cpp
     src/FlowFieldManager.cpp
     src/UnitSpawner.cpp
@@ -62,6 +65,9 @@ set(RTS_HEADERS
     include/RTSCamera.h
     include/Unit.h
     include/Building.h
+    include/Vehicle.h
+    include/Bulldozer.h
+    include/FloorSnapper.h
     include/SelectionManager.h
     include/FlowFieldManager.h
     include/UnitSpawner.h

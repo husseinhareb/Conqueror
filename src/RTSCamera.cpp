@@ -5,6 +5,9 @@
 
 #include "RTSCamera.h"
 #include "Unit.h"
+#include "Building.h"
+#include "Bulldozer.h"
+#include "FloorSnapper.h"
 
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/viewport.hpp>
@@ -23,6 +26,11 @@
 #include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
 #include <godot_cpp/classes/world3d.hpp>
 #include <godot_cpp/classes/collision_object3d.hpp>
+#include <godot_cpp/classes/collision_shape3d.hpp>
+#include <godot_cpp/classes/capsule_shape3d.hpp>
+#include <godot_cpp/classes/capsule_mesh.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -47,7 +55,11 @@ void RTSCamera::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_max_zoom"), &RTSCamera::get_max_zoom);
     
     // Bind toggle method for button signal
-    ClassDB::bind_method(D_METHOD("_on_toggle_button_pressed"), &RTSCamera::toggle_bottom_panel);;
+    ClassDB::bind_method(D_METHOD("_on_toggle_button_pressed"), &RTSCamera::toggle_bottom_panel);
+    ClassDB::bind_method(D_METHOD("_on_build_power_pressed"), &RTSCamera::on_build_power_pressed);
+    ClassDB::bind_method(D_METHOD("_on_build_barracks_pressed"), &RTSCamera::on_build_barracks_pressed);
+    ClassDB::bind_method(D_METHOD("_on_build_bulldozer_pressed"), &RTSCamera::on_build_bulldozer_pressed);
+    ClassDB::bind_method(D_METHOD("_on_train_unit_pressed"), &RTSCamera::on_train_unit_pressed);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_zoom", PROPERTY_HINT_RANGE, "30.0,100.0,1.0"), "set_max_zoom", "get_max_zoom");
 }
 
@@ -98,6 +110,15 @@ void RTSCamera::_process(double delta) {
     // Update unit info in panel
     update_unit_info_panel();
     
+    // Update build buttons visibility
+    update_build_buttons();
+    
+    // Update ghost building position if placing
+    if (is_placing_building && selected_bulldozer) {
+        Vector3 ground_pos = raycast_ground(cursor_position);
+        selected_bulldozer->update_ghost_position(ground_pos);
+    }
+    
     update_camera_transform();
 }
 
@@ -116,41 +137,161 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_MIDDLE) {
             is_rotating = mouse_button->is_pressed();
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_RIGHT) {
-            // Right-click: deselect current unit
-            if (mouse_button->is_pressed() && selected_unit) {
-                select_unit(nullptr);
+            // Right-click: drag pan or cancel/deselect
+            if (mouse_button->is_pressed()) {
+                // Start drag panning
+                is_drag_panning = true;
+                drag_start_position = cursor_position;
+            } else {
+                // Right-click released
+                // Check if mouse moved significantly during drag
+                float drag_distance = (cursor_position - drag_start_position).length();
+                if (drag_distance < 5.0f) {
+                    // Minimal movement - treat as click for cancel/deselect
+                    if (is_placing_building) {
+                        cancel_building_placement();
+                    } else {
+                        deselect_all();
+                    }
+                }
+                is_drag_panning = false;
             }
         } else if (mouse_button->get_button_index() == MouseButton::MOUSE_BUTTON_LEFT) {
             if (mouse_button->is_pressed()) {
-                // Check if clicking on toggle button
+                // Check if cursor is over the bottom panel area - don't process game clicks
+                Viewport *viewport = get_viewport();
+                if (viewport && bottom_panel_expanded) {
+                    Vector2 viewport_size = viewport->get_visible_rect().size;
+                    float panel_top = viewport_size.y * (1.0f - bottom_panel_height_percent);
+                    if (cursor_position.y >= panel_top) {
+                        // Cursor is over the panel area
+                        // Check if clicking on toggle button
+                        if (bottom_panel_toggle_btn) {
+                            Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
+                            if (btn_rect.has_point(cursor_position)) {
+                                toggle_bottom_panel();
+                                return;
+                            }
+                        }
+                        
+                        // Check build buttons
+                        if (build_power_btn && build_power_btn->is_visible()) {
+                            Rect2 btn_rect = build_power_btn->get_global_rect();
+                            if (btn_rect.has_point(cursor_position)) {
+                                on_build_power_pressed();
+                                return;
+                            }
+                        }
+                        if (build_barracks_btn && build_barracks_btn->is_visible()) {
+                            Rect2 btn_rect = build_barracks_btn->get_global_rect();
+                            if (btn_rect.has_point(cursor_position)) {
+                                on_build_barracks_pressed();
+                                return;
+                            }
+                        }
+                        if (build_bulldozer_btn && build_bulldozer_btn->is_visible()) {
+                            Rect2 btn_rect = build_bulldozer_btn->get_global_rect();
+                            if (btn_rect.has_point(cursor_position)) {
+                                on_build_bulldozer_pressed();
+                                return;
+                            }
+                        }
+                        if (train_unit_btn && train_unit_btn->is_visible()) {
+                            Rect2 btn_rect = train_unit_btn->get_global_rect();
+                            if (btn_rect.has_point(cursor_position)) {
+                                on_train_unit_pressed();
+                                return;
+                            }
+                        }
+                        // Click is on panel but not on a button - ignore it
+                        return;
+                    }
+                }
+                
+                // Check if clicking on toggle button (when collapsed, it's at bottom)
                 if (bottom_panel_toggle_btn) {
                     Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
                     if (btn_rect.has_point(cursor_position)) {
                         toggle_bottom_panel();
-                        return; // Don't start selection when clicking button
+                        return;
                     }
                 }
                 
-                // If a unit is selected, left-click issues move order
+                // If placing a building, confirm placement
+                if (is_placing_building) {
+                    confirm_building_placement();
+                    return;
+                }
+                
+                // If a unit is selected, left-click issues move order (unless clicking another unit/building/bulldozer)
                 if (selected_unit) {
-                    // Check if clicking on another unit to select it instead
                     Unit *clicked_unit = raycast_for_unit(cursor_position);
                     if (clicked_unit) {
                         select_unit(clicked_unit);
                         return;
                     }
                     
-                    // Otherwise, issue move order to ground position
+                    Bulldozer *clicked_bulldozer = raycast_for_bulldozer(cursor_position);
+                    if (clicked_bulldozer) {
+                        select_bulldozer(clicked_bulldozer);
+                        return;
+                    }
+                    
+                    Building *clicked_building = raycast_for_building(cursor_position);
+                    if (clicked_building) {
+                        select_building(clicked_building);
+                        return;
+                    }
+                    
                     Vector3 ground_pos = raycast_ground(cursor_position);
                     issue_move_order(ground_pos);
                     return;
                 }
                 
-                // No unit selected - check if clicking on a unit to select it
+                // If bulldozer selected, issue move order
+                if (selected_bulldozer && !selected_bulldozer->get_is_constructing()) {
+                    Unit *clicked_unit = raycast_for_unit(cursor_position);
+                    if (clicked_unit) {
+                        select_unit(clicked_unit);
+                        return;
+                    }
+                    
+                    Bulldozer *clicked_bulldozer = raycast_for_bulldozer(cursor_position);
+                    if (clicked_bulldozer && clicked_bulldozer != selected_bulldozer) {
+                        select_bulldozer(clicked_bulldozer);
+                        return;
+                    }
+                    
+                    Building *clicked_building = raycast_for_building(cursor_position);
+                    if (clicked_building) {
+                        select_building(clicked_building);
+                        return;
+                    }
+                    
+                    // Move bulldozer
+                    Vector3 ground_pos = raycast_ground(cursor_position);
+                    selected_bulldozer->move_to(ground_pos);
+                    UtilityFunctions::print("Bulldozer move order to: ", ground_pos);
+                    return;
+                }
+                
+                // No unit/bulldozer selected - check what to select
+                Bulldozer *clicked_bulldozer = raycast_for_bulldozer(cursor_position);
+                if (clicked_bulldozer) {
+                    select_bulldozer(clicked_bulldozer);
+                    return;
+                }
+                
                 Unit *clicked_unit = raycast_for_unit(cursor_position);
                 if (clicked_unit) {
                     select_unit(clicked_unit);
-                    return; // Don't start box selection when clicking a unit
+                    return;
+                }
+                
+                Building *clicked_building = raycast_for_building(cursor_position);
+                if (clicked_building) {
+                    select_building(clicked_building);
+                    return;
                 }
                 
                 // Start box selection
@@ -171,10 +312,24 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
         }
     }
     
-    // Mouse motion events (rotation)
+    // Mouse motion events
     Ref<InputEventMouseMotion> mouse_motion = event;
-    if (mouse_motion.is_valid() && is_rotating) {
-        handle_rotation(mouse_motion->get_relative());
+    if (mouse_motion.is_valid()) {
+        if (is_rotating) {
+            handle_rotation(mouse_motion->get_relative());
+        } else if (is_drag_panning) {
+            handle_drag_pan(mouse_motion->get_relative());
+        }
+    }
+    
+    // Escape key cancels building placement
+    Ref<InputEventKey> key_event = event;
+    if (key_event.is_valid() && key_event->is_pressed()) {
+        if (key_event->get_keycode() == Key::KEY_ESCAPE) {
+            if (is_placing_building) {
+                cancel_building_placement();
+            }
+        }
     }
 }
 
@@ -208,6 +363,9 @@ void RTSCamera::handle_keyboard_movement(double delta) {
 }
 
 void RTSCamera::handle_edge_scroll(double delta) {
+    // Don't edge scroll while drag panning
+    if (is_drag_panning) return;
+    
     Viewport *viewport = get_viewport();
     
     if (!viewport || !cursor_initialized) return;
@@ -256,6 +414,26 @@ void RTSCamera::handle_rotation(const Vector2 &relative) {
     // Rotate pitch (up/down) - clamp for Generals-style view
     camera_pitch -= relative.y * rotation_speed * 30.0f;
     camera_pitch = Math::clamp(camera_pitch, -80.0f, -30.0f);
+    
+    update_camera_transform();
+}
+
+void RTSCamera::handle_drag_pan(const Vector2 &relative) {
+    // Right-click drag panning - faster camera movement
+    // Convert mouse movement to camera-relative world movement
+    float yaw_rad = Math::deg_to_rad(camera_yaw);
+    Vector3 forward = Vector3(-Math::sin(yaw_rad), 0, -Math::cos(yaw_rad));
+    Vector3 right = Vector3(Math::cos(yaw_rad), 0, -Math::sin(yaw_rad));
+    
+    // Scale movement by zoom level for consistent feel
+    float zoom_factor = current_zoom / 25.0f;  // Normalize to default zoom
+    float speed = drag_pan_speed * drag_pan_multiplier * zoom_factor;
+    
+    // Move camera based on mouse drag direction
+    // Drag right = camera moves left (world moves right under cursor)
+    // Drag down = camera moves up (world moves down under cursor)
+    target_position -= right * relative.x * speed;
+    target_position += forward * relative.y * speed;
     
     update_camera_transform();
 }
@@ -414,8 +592,8 @@ void RTSCamera::update_cursor(double delta) {
     Vector2 mouse_delta = current_mouse - last_mouse;
     last_mouse = current_mouse;
     
-    // Don't move custom cursor while rotating camera
-    if (!is_rotating) {
+    // Don't move custom cursor while rotating camera or drag panning
+    if (!is_rotating && !is_drag_panning) {
         // Apply movement to cursor
         cursor_position += mouse_delta;
         
@@ -433,7 +611,7 @@ void RTSCamera::update_cursor(double delta) {
             last_mouse = center;
         }
     } else {
-        // While rotating, just track the mouse position without warping
+        // While rotating or drag panning, just track the mouse position without warping
         last_mouse = current_mouse;
     }
 }
@@ -621,6 +799,9 @@ void RTSCamera::setup_bottom_panel() {
         cursor_sprite->move_to_front();
     }
     
+    // Setup build buttons (initially hidden)
+    setup_build_buttons();
+    
     UtilityFunctions::print("Bottom panel setup complete");
 }
 
@@ -707,20 +888,49 @@ void RTSCamera::update_hover_detection() {
     // Don't do hover detection while rotating or selecting
     if (is_rotating || is_selecting) return;
     
-    // Raycast to find unit under cursor
-    Unit *new_hovered = raycast_for_unit(cursor_position);
+    // Raycast to find what's under cursor (in priority order)
+    Bulldozer *new_hovered_bulldozer = raycast_for_bulldozer(cursor_position);
+    Unit *new_hovered_unit = nullptr;
+    Building *new_hovered_building = nullptr;
+    
+    if (!new_hovered_bulldozer) {
+        new_hovered_unit = raycast_for_unit(cursor_position);
+    }
+    
+    if (!new_hovered_bulldozer && !new_hovered_unit) {
+        new_hovered_building = raycast_for_building(cursor_position);
+    }
+    
+    // Update hovered bulldozer state
+    if (new_hovered_bulldozer != hovered_bulldozer) {
+        if (hovered_bulldozer) {
+            hovered_bulldozer->set_hovered(false);
+        }
+        hovered_bulldozer = new_hovered_bulldozer;
+        if (hovered_bulldozer) {
+            hovered_bulldozer->set_hovered(true);
+        }
+    }
     
     // Update hovered unit state
-    if (new_hovered != hovered_unit) {
-        // Unhover previous unit
+    if (new_hovered_unit != hovered_unit) {
         if (hovered_unit) {
             hovered_unit->set_hovered(false);
         }
-        
-        // Hover new unit
-        hovered_unit = new_hovered;
+        hovered_unit = new_hovered_unit;
         if (hovered_unit) {
             hovered_unit->set_hovered(true);
+        }
+    }
+    
+    // Update hovered building state
+    if (new_hovered_building != hovered_building) {
+        if (hovered_building) {
+            hovered_building->set_hovered(false);
+        }
+        hovered_building = new_hovered_building;
+        if (hovered_building) {
+            hovered_building->set_hovered(true);
         }
     }
 }
@@ -773,7 +983,61 @@ Unit* RTSCamera::raycast_for_unit(const Vector2 &screen_pos) {
     return nullptr;
 }
 
+Building* RTSCamera::raycast_for_building(const Vector2 &screen_pos) {
+    Viewport *viewport = get_viewport();
+    if (!viewport) return nullptr;
+    
+    // Get the 3D world
+    Ref<World3D> world = get_world_3d();
+    if (world.is_null()) return nullptr;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return nullptr;
+    
+    // Project ray from screen position
+    Vector3 ray_origin = project_ray_origin(screen_pos);
+    Vector3 ray_direction = project_ray_normal(screen_pos);
+    Vector3 ray_end = ray_origin + ray_direction * 1000.0f;
+    
+    // Create ray query - include layer 4 where buildings are
+    Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(ray_origin, ray_end);
+    query->set_collide_with_areas(false);
+    query->set_collide_with_bodies(true);
+    query->set_collision_mask(4); // Layer 4 is buildings
+    
+    // Perform raycast
+    Dictionary result = space_state->intersect_ray(query);
+    
+    if (result.is_empty()) return nullptr;
+    
+    // Check if we hit a Building
+    Object *collider = Object::cast_to<Object>(result["collider"]);
+    if (!collider) return nullptr;
+    
+    // Check if the collider is a Building
+    Building *building = Object::cast_to<Building>(collider);
+    if (building) return building;
+    
+    // Check parent (in case we hit a collision shape child)
+    Node *parent = Object::cast_to<Node>(collider);
+    if (parent) {
+        parent = parent->get_parent();
+        if (parent) {
+            building = Object::cast_to<Building>(parent);
+            if (building) return building;
+        }
+    }
+    
+    return nullptr;
+}
+
 void RTSCamera::select_unit(Unit *unit) {
+    // Deselect any selected building first
+    if (selected_building) {
+        selected_building->set_selected(false);
+        selected_building = nullptr;
+    }
+    
     // Deselect previous unit
     if (selected_unit && selected_unit != unit) {
         selected_unit->set_selected(false);
@@ -787,10 +1051,64 @@ void RTSCamera::select_unit(Unit *unit) {
     }
 }
 
+void RTSCamera::select_building(Building *building) {
+    // Deselect any selected unit first
+    if (selected_unit) {
+        selected_unit->set_selected(false);
+        selected_unit = nullptr;
+    }
+    
+    // Deselect previous building
+    if (selected_building && selected_building != building) {
+        selected_building->set_selected(false);
+    }
+    
+    // Select new building
+    selected_building = building;
+    if (selected_building) {
+        selected_building->set_selected(true);
+        UtilityFunctions::print("Selected building: ", selected_building->get_building_name());
+    }
+}
+
+void RTSCamera::deselect_all() {
+    if (selected_unit) {
+        selected_unit->set_selected(false);
+        selected_unit = nullptr;
+    }
+    if (selected_building) {
+        selected_building->set_selected(false);
+        selected_building = nullptr;
+    }
+    if (selected_bulldozer) {
+        selected_bulldozer->set_selected(false);
+        selected_bulldozer = nullptr;
+    }
+}
+
 void RTSCamera::update_unit_info_panel() {
     if (!unit_info_name || !unit_info_health || !unit_info_attack || !unit_info_position) return;
     
-    if (selected_unit) {
+    if (selected_bulldozer) {
+        // Update labels with selected bulldozer info
+        unit_info_name->set_text(String("Vehicle: ") + selected_bulldozer->get_vehicle_name());
+        
+        String health_text = String("Health: ") + String::num_int64(selected_bulldozer->get_health()) + 
+                            String(" / ") + String::num_int64(selected_bulldozer->get_max_health());
+        unit_info_health->set_text(health_text);
+        
+        if (selected_bulldozer->get_is_constructing()) {
+            float progress = selected_bulldozer->get_construction_progress() * 100.0f;
+            unit_info_attack->set_text(String("Building: ") + String::num(progress, 0) + String("%"));
+        } else {
+            unit_info_attack->set_text("Ready to build");
+        }
+        
+        Vector3 pos = selected_bulldozer->get_global_position();
+        String pos_text = String("Position: (") + String::num(pos.x, 1) + String(", ") + 
+                          String::num(pos.y, 1) + String(", ") + String::num(pos.z, 1) + String(")");
+        unit_info_position->set_text(pos_text);
+    } else if (selected_unit) {
         // Update labels with selected unit info
         unit_info_name->set_text(String("Unit: ") + selected_unit->get_unit_name());
         
@@ -806,6 +1124,30 @@ void RTSCamera::update_unit_info_panel() {
         String pos_text = String("Position: (") + String::num(pos.x, 1) + String(", ") + 
                           String::num(pos.y, 1) + String(", ") + String::num(pos.z, 1) + String(")");
         unit_info_position->set_text(pos_text);
+    } else if (selected_building) {
+        // Update labels with selected building info
+        unit_info_name->set_text(String("Building: ") + selected_building->get_building_name());
+        
+        String health_text = String("Health: ") + String::num_int64(selected_building->get_health()) + 
+                            String(" / ") + String::num_int64(selected_building->get_max_health());
+        unit_info_health->set_text(health_text);
+        
+        String armor_text = String("Armor: ") + String::num_int64(selected_building->get_armor());
+        unit_info_attack->set_text(armor_text);
+        
+        Vector3 pos = selected_building->get_global_position();
+        String pos_text = String("Position: (") + String::num(pos.x, 1) + String(", ") + 
+                          String::num(pos.y, 1) + String(", ") + String::num(pos.z, 1) + String(")");
+        unit_info_position->set_text(pos_text);
+    } else if (hovered_bulldozer) {
+        unit_info_name->set_text(String("[Hover] ") + hovered_bulldozer->get_vehicle_name());
+        
+        String health_text = String("Health: ") + String::num_int64(hovered_bulldozer->get_health()) + 
+                            String(" / ") + String::num_int64(hovered_bulldozer->get_max_health());
+        unit_info_health->set_text(health_text);
+        
+        unit_info_attack->set_text("");
+        unit_info_position->set_text("(Click to select)");
     } else if (hovered_unit) {
         // Show hovered unit info in dimmer style (preview)
         unit_info_name->set_text(String("[Hover] ") + hovered_unit->get_unit_name());
@@ -816,9 +1158,19 @@ void RTSCamera::update_unit_info_panel() {
         
         unit_info_attack->set_text("");
         unit_info_position->set_text("(Click to select)");
+    } else if (hovered_building) {
+        // Show hovered building info in dimmer style (preview)
+        unit_info_name->set_text(String("[Hover] ") + hovered_building->get_building_name());
+        
+        String health_text = String("Health: ") + String::num_int64(hovered_building->get_health()) + 
+                            String(" / ") + String::num_int64(hovered_building->get_max_health());
+        unit_info_health->set_text(health_text);
+        
+        unit_info_attack->set_text("");
+        unit_info_position->set_text("(Click to select)");
     } else {
-        // No unit selected or hovered
-        unit_info_name->set_text("No unit selected");
+        // No unit or building selected or hovered
+        unit_info_name->set_text("No selection");
         unit_info_health->set_text("");
         unit_info_attack->set_text("");
         unit_info_position->set_text("");
@@ -828,7 +1180,8 @@ void RTSCamera::update_unit_info_panel() {
 void RTSCamera::update_cursor_mode() {
     if (!cursor_sprite || !cursor_initialized) return;
     
-    bool should_use_move_cursor = (selected_unit != nullptr);
+    bool should_use_move_cursor = (selected_unit != nullptr) || 
+                                  (selected_bulldozer != nullptr && !is_placing_building);
     
     if (should_use_move_cursor != using_move_cursor) {
         using_move_cursor = should_use_move_cursor;
@@ -968,6 +1321,332 @@ void RTSCamera::issue_move_order(const Vector3 &target) {
     
     selected_unit->set_move_target(target);
     UtilityFunctions::print("Move order issued to position: (", target.x, ", ", target.y, ", ", target.z, ")");
+}
+
+Bulldozer* RTSCamera::raycast_for_bulldozer(const Vector2 &screen_pos) {
+    Viewport *viewport = get_viewport();
+    if (!viewport) return nullptr;
+    
+    Ref<World3D> world = get_world_3d();
+    if (world.is_null()) return nullptr;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return nullptr;
+    
+    Vector3 ray_origin = project_ray_origin(screen_pos);
+    Vector3 ray_direction = project_ray_normal(screen_pos);
+    Vector3 ray_end = ray_origin + ray_direction * 1000.0f;
+    
+    // Layer 8 is vehicles/bulldozers
+    Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(ray_origin, ray_end);
+    query->set_collide_with_areas(false);
+    query->set_collide_with_bodies(true);
+    query->set_collision_mask(8);
+    
+    Dictionary result = space_state->intersect_ray(query);
+    
+    if (result.is_empty()) return nullptr;
+    
+    Object *collider = Object::cast_to<Object>(result["collider"]);
+    if (!collider) return nullptr;
+    
+    Bulldozer *bulldozer = Object::cast_to<Bulldozer>(collider);
+    if (bulldozer) return bulldozer;
+    
+    Node *parent = Object::cast_to<Node>(collider);
+    if (parent) {
+        parent = parent->get_parent();
+        if (parent) {
+            bulldozer = Object::cast_to<Bulldozer>(parent);
+            if (bulldozer) return bulldozer;
+        }
+    }
+    
+    return nullptr;
+}
+
+void RTSCamera::select_bulldozer(Bulldozer *bulldozer) {
+    // Deselect any selected unit or building first
+    if (selected_unit) {
+        selected_unit->set_selected(false);
+        selected_unit = nullptr;
+    }
+    if (selected_building) {
+        selected_building->set_selected(false);
+        selected_building = nullptr;
+    }
+    
+    // Deselect previous bulldozer
+    if (selected_bulldozer && selected_bulldozer != bulldozer) {
+        selected_bulldozer->set_selected(false);
+    }
+    
+    selected_bulldozer = bulldozer;
+    if (selected_bulldozer) {
+        selected_bulldozer->set_selected(true);
+        UtilityFunctions::print("Selected bulldozer: ", selected_bulldozer->get_vehicle_name());
+    }
+}
+
+void RTSCamera::setup_build_buttons() {
+    if (!bottom_panel_container) return;
+    
+    float label_start_y = bottom_panel_header_height + 15;
+    float btn_width = 120;
+    float btn_height = 35;
+    float btn_spacing = 10;
+    
+    // Build Power Plant button
+    build_power_btn = memnew(Button);
+    build_power_btn->set_text("Power Plant");
+    build_power_btn->set_anchor(Side::SIDE_LEFT, 0.35f);
+    build_power_btn->set_anchor(Side::SIDE_RIGHT, 0.35f);
+    build_power_btn->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
+    build_power_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
+    build_power_btn->set_offset(Side::SIDE_LEFT, 0);
+    build_power_btn->set_offset(Side::SIDE_RIGHT, btn_width);
+    build_power_btn->set_offset(Side::SIDE_TOP, label_start_y);
+    build_power_btn->set_offset(Side::SIDE_BOTTOM, label_start_y + btn_height);
+    build_power_btn->set_visible(false);
+    build_power_btn->connect("pressed", Callable(this, "_on_build_power_pressed"));
+    bottom_panel_container->add_child(build_power_btn);
+    
+    // Build Barracks button
+    build_barracks_btn = memnew(Button);
+    build_barracks_btn->set_text("Barracks");
+    build_barracks_btn->set_anchor(Side::SIDE_LEFT, 0.35f);
+    build_barracks_btn->set_anchor(Side::SIDE_RIGHT, 0.35f);
+    build_barracks_btn->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
+    build_barracks_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
+    build_barracks_btn->set_offset(Side::SIDE_LEFT, btn_width + btn_spacing);
+    build_barracks_btn->set_offset(Side::SIDE_RIGHT, btn_width * 2 + btn_spacing);
+    build_barracks_btn->set_offset(Side::SIDE_TOP, label_start_y);
+    build_barracks_btn->set_offset(Side::SIDE_BOTTOM, label_start_y + btn_height);
+    build_barracks_btn->set_visible(false);
+    build_barracks_btn->connect("pressed", Callable(this, "_on_build_barracks_pressed"));
+    bottom_panel_container->add_child(build_barracks_btn);
+    
+    // Train Unit button (for barracks)
+    train_unit_btn = memnew(Button);
+    train_unit_btn->set_text("Train Soldier");
+    train_unit_btn->set_anchor(Side::SIDE_LEFT, 0.35f);
+    train_unit_btn->set_anchor(Side::SIDE_RIGHT, 0.35f);
+    train_unit_btn->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
+    train_unit_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
+    train_unit_btn->set_offset(Side::SIDE_LEFT, 0);
+    train_unit_btn->set_offset(Side::SIDE_RIGHT, btn_width);
+    train_unit_btn->set_offset(Side::SIDE_TOP, label_start_y);
+    train_unit_btn->set_offset(Side::SIDE_BOTTOM, label_start_y + btn_height);
+    train_unit_btn->set_visible(false);
+    train_unit_btn->connect("pressed", Callable(this, "_on_train_unit_pressed"));
+    bottom_panel_container->add_child(train_unit_btn);
+    
+    // Build Bulldozer button (for Command Center)
+    build_bulldozer_btn = memnew(Button);
+    build_bulldozer_btn->set_text("Build Bulldozer");
+    build_bulldozer_btn->set_anchor(Side::SIDE_LEFT, 0.35f);
+    build_bulldozer_btn->set_anchor(Side::SIDE_RIGHT, 0.35f);
+    build_bulldozer_btn->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
+    build_bulldozer_btn->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
+    build_bulldozer_btn->set_offset(Side::SIDE_LEFT, 0);
+    build_bulldozer_btn->set_offset(Side::SIDE_RIGHT, btn_width);
+    build_bulldozer_btn->set_offset(Side::SIDE_TOP, label_start_y);
+    build_bulldozer_btn->set_offset(Side::SIDE_BOTTOM, label_start_y + btn_height);
+    build_bulldozer_btn->set_visible(false);
+    build_bulldozer_btn->connect("pressed", Callable(this, "_on_build_bulldozer_pressed"));
+    bottom_panel_container->add_child(build_bulldozer_btn);
+    
+    // Construction progress label
+    construction_progress_label = memnew(Label);
+    construction_progress_label->set_text("");
+    construction_progress_label->set_anchor(Side::SIDE_LEFT, 0.35f);
+    construction_progress_label->set_anchor(Side::SIDE_RIGHT, 0.65f);
+    construction_progress_label->set_anchor(Side::SIDE_TOP, 1.0f - bottom_panel_height_percent);
+    construction_progress_label->set_anchor(Side::SIDE_BOTTOM, 1.0f - bottom_panel_height_percent);
+    construction_progress_label->set_offset(Side::SIDE_LEFT, 0);
+    construction_progress_label->set_offset(Side::SIDE_RIGHT, 0);
+    construction_progress_label->set_offset(Side::SIDE_TOP, label_start_y + btn_height + 10);
+    construction_progress_label->set_offset(Side::SIDE_BOTTOM, label_start_y + btn_height + 35);
+    construction_progress_label->add_theme_color_override("font_color", Color(0.9f, 0.9f, 0.5f, 1.0f));
+    construction_progress_label->set_visible(false);
+    bottom_panel_container->add_child(construction_progress_label);
+}
+
+void RTSCamera::update_build_buttons() {
+    if (!build_power_btn || !build_barracks_btn || !train_unit_btn || !build_bulldozer_btn || !construction_progress_label) return;
+    
+    // Hide all buttons by default
+    build_power_btn->set_visible(false);
+    build_barracks_btn->set_visible(false);
+    build_bulldozer_btn->set_visible(false);
+    train_unit_btn->set_visible(false);
+    construction_progress_label->set_visible(false);
+    
+    // Show build buttons if bulldozer is selected
+    if (selected_bulldozer && bottom_panel_expanded) {
+        if (selected_bulldozer->get_is_constructing()) {
+            // Show construction progress
+            construction_progress_label->set_visible(true);
+            float progress = selected_bulldozer->get_construction_progress() * 100.0f;
+            construction_progress_label->set_text(String("Constructing... ") + String::num(progress, 0) + String("%"));
+        } else if (!is_placing_building) {
+            // Show build buttons
+            build_power_btn->set_visible(true);
+            build_barracks_btn->set_visible(true);
+        } else {
+            // Show placement instruction
+            construction_progress_label->set_visible(true);
+            construction_progress_label->set_text("Click to place building, Right-click to cancel");
+        }
+    }
+    
+    // Show buttons based on selected building type
+    if (selected_building && bottom_panel_expanded) {
+        if (selected_building->get_building_name() == "Barracks") {
+            train_unit_btn->set_visible(true);
+        } else if (selected_building->get_building_name() == "Command Center") {
+            build_bulldozer_btn->set_visible(true);
+        }
+    }
+}
+
+void RTSCamera::on_build_power_pressed() {
+    if (!selected_bulldozer) return;
+    start_building_placement(0);  // 0 = Power Plant
+}
+
+void RTSCamera::on_build_barracks_pressed() {
+    if (!selected_bulldozer) return;
+    start_building_placement(1);  // 1 = Barracks
+}
+
+void RTSCamera::on_build_bulldozer_pressed() {
+    if (!selected_building) return;
+    if (selected_building->get_building_name() != "Command Center") return;
+    
+    // Get Command Center position
+    Vector3 cc_pos = selected_building->get_global_position();
+    Vector3 spawn_pos = cc_pos + Vector3(8, 5.0f, 0); // Spawn to the right of Command Center
+    
+    // Create a new bulldozer
+    Bulldozer *bulldozer = memnew(Bulldozer);
+    bulldozer->set_vehicle_name("Construction Dozer");
+    bulldozer->set_model_path("res://assets/vehicles/bulldozer/bulldozer.glb");
+    bulldozer->set_model_scale(1.5f);
+    bulldozer->set_power_plant_model("res://assets/buildings/power/power.glb");
+    
+    // Add to scene first, then set position
+    get_tree()->get_root()->add_child(bulldozer);
+    bulldozer->set_global_position(spawn_pos);
+    
+    // Snap to floor
+    FloorSnapConfig config;
+    config.floor_collision_mask = 1;
+    config.raycast_start_height = 10.0f;
+    config.raycast_max_distance = 50.0f;
+    config.ground_offset = 0.0f;
+    
+    FloorSnapResult result = FloorSnapper::snap_to_floor(bulldozer, config);
+    if (result.success) {
+        UtilityFunctions::print("Bulldozer snapped to floor at Y=", result.final_y);
+    }
+    
+    UtilityFunctions::print("Built new Bulldozer from Command Center");
+}
+
+void RTSCamera::on_train_unit_pressed() {
+    if (!selected_building) return;
+    if (selected_building->get_building_name() != "Barracks") return;
+    
+    // Get barracks position first
+    Vector3 barracks_pos = selected_building->get_global_position();
+    Vector3 spawn_pos = barracks_pos + Vector3(4, 5.0f, 4); // Start high, will snap down
+    
+    // Spawn a unit at the barracks location
+    Unit *unit = memnew(Unit);
+    unit->set_unit_name("Soldier");
+    
+    // Create collision shape
+    CollisionShape3D *collision = memnew(CollisionShape3D);
+    Ref<CapsuleShape3D> capsule_shape;
+    capsule_shape.instantiate();
+    capsule_shape->set_radius(0.4f);
+    capsule_shape->set_height(1.0f);
+    collision->set_shape(capsule_shape);
+    unit->add_child(collision);
+    
+    // Create mesh visual
+    MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+    Ref<CapsuleMesh> capsule_mesh;
+    capsule_mesh.instantiate();
+    capsule_mesh->set_radius(0.4f);
+    capsule_mesh->set_height(1.0f);
+    mesh_instance->set_mesh(capsule_mesh);
+    mesh_instance->set_position(Vector3(0, 0.5f, 0));
+    
+    // Set material
+    Ref<StandardMaterial3D> material;
+    material.instantiate();
+    material->set_albedo(Color(0.3f, 0.3f, 0.8f));
+    mesh_instance->set_surface_override_material(0, material);
+    unit->add_child(mesh_instance);
+    
+    // Add to scene FIRST, then set position
+    get_tree()->get_root()->add_child(unit);
+    unit->set_global_position(spawn_pos);
+    
+    // Set collision layers
+    unit->set_collision_layer(2);
+    unit->set_collision_mask(1);
+    
+    // Snap unit to floor
+    FloorSnapConfig config;
+    config.floor_collision_mask = 1; // Ground layer
+    config.raycast_start_height = 10.0f;
+    config.raycast_max_distance = 50.0f;
+    config.ground_offset = 0.0f;
+    
+    FloorSnapResult result = FloorSnapper::snap_to_floor(unit, config);
+    if (result.success) {
+        UtilityFunctions::print("Unit snapped to floor at Y=", result.final_y);
+    }
+    
+    UtilityFunctions::print("Trained new soldier at barracks");
+}
+
+void RTSCamera::start_building_placement(int type) {
+    if (!selected_bulldozer) return;
+    
+    is_placing_building = true;
+    placing_building_type = type;
+    selected_bulldozer->start_placing_building(type);
+    
+    UtilityFunctions::print("Started building placement, type: ", type);
+}
+
+void RTSCamera::cancel_building_placement() {
+    if (!is_placing_building) return;
+    
+    is_placing_building = false;
+    placing_building_type = -1;
+    
+    if (selected_bulldozer) {
+        selected_bulldozer->cancel_placing();
+    }
+    
+    UtilityFunctions::print("Cancelled building placement");
+}
+
+void RTSCamera::confirm_building_placement() {
+    if (!is_placing_building || !selected_bulldozer) return;
+    
+    Vector3 ground_pos = raycast_ground(cursor_position);
+    selected_bulldozer->confirm_build_location(ground_pos);
+    
+    is_placing_building = false;
+    placing_building_type = -1;
+    
+    UtilityFunctions::print("Confirmed building placement at: ", ground_pos);
 }
 
 } // namespace rts

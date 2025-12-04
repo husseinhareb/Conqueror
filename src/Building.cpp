@@ -9,6 +9,8 @@
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -52,6 +54,14 @@ void Building::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_armor"), &Building::get_armor);
     ADD_PROPERTY(PropertyInfo(Variant::INT, "armor"), "set_armor", "get_armor");
     
+    ClassDB::bind_method(D_METHOD("set_model_path", "path"), &Building::set_model_path);
+    ClassDB::bind_method(D_METHOD("get_model_path"), &Building::get_model_path);
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "model_path", PROPERTY_HINT_FILE, "*.glb,*.gltf"), "set_model_path", "get_model_path");
+    
+    ClassDB::bind_method(D_METHOD("set_model_scale", "scale"), &Building::set_model_scale);
+    ClassDB::bind_method(D_METHOD("get_model_scale"), &Building::get_model_scale);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "model_scale", PROPERTY_HINT_RANGE, "0.01,10.0,0.01"), "set_model_scale", "get_model_scale");
+    
     // Signals
     ADD_SIGNAL(MethodInfo("building_selected", PropertyInfo(Variant::OBJECT, "building")));
     ADD_SIGNAL(MethodInfo("building_deselected", PropertyInfo(Variant::OBJECT, "building")));
@@ -76,8 +86,13 @@ void Building::_ready() {
     // Buildings don't need to detect collisions with anything
     set_collision_mask(0);
     
-    // Create the building mesh and collision
-    create_building_mesh();
+    // Try to load custom model first, fall back to box mesh
+    if (!model_path.is_empty()) {
+        load_model();
+    } else {
+        create_building_mesh();
+    }
+    
     setup_collision();
 }
 
@@ -115,6 +130,79 @@ void Building::create_building_mesh() {
         mat->set_albedo(Color(0.5f, 0.4f, 0.3f)); // Brown/tan color for building
         mat->set_roughness(0.8f);
         mesh_instance->set_surface_override_material(0, mat);
+    }
+}
+
+void Building::load_model() {
+    if (model_path.is_empty()) {
+        UtilityFunctions::print("Building: No model path specified, using default box");
+        create_building_mesh();
+        return;
+    }
+    
+    UtilityFunctions::print("Building: Attempting to load model from: ", model_path);
+    
+    // Load the 3D model (GLB/GLTF)
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    
+    // Check if file exists first
+    if (!loader->exists(model_path)) {
+        UtilityFunctions::print("Building: Model file does not exist: ", model_path);
+        create_building_mesh();
+        return;
+    }
+    
+    Ref<PackedScene> scene = loader->load(model_path);
+    
+    if (scene.is_null()) {
+        UtilityFunctions::print("Building: Failed to load model from ", model_path, ", using default box");
+        create_building_mesh();
+        return;
+    }
+    
+    UtilityFunctions::print("Building: PackedScene loaded successfully");
+    
+    // Instance the loaded model
+    model_instance = Object::cast_to<Node3D>(scene->instantiate());
+    if (!model_instance) {
+        UtilityFunctions::print("Building: Failed to instantiate model, using default box");
+        create_building_mesh();
+        return;
+    }
+    
+    add_child(model_instance);
+    
+    // Apply scale
+    model_instance->set_scale(Vector3(model_scale, model_scale, model_scale));
+    
+    UtilityFunctions::print("Building: Model instanced with scale: ", model_scale);
+    UtilityFunctions::print("Building: Model child count: ", model_instance->get_child_count());
+    
+    // Find mesh instances recursively
+    find_mesh_instances_recursive(model_instance);
+    
+    if (mesh_instance) {
+        UtilityFunctions::print("Building: Found mesh instance in model");
+    } else {
+        UtilityFunctions::print("Building: No mesh instance found in model hierarchy");
+    }
+    
+    UtilityFunctions::print("Building: Successfully loaded model from ", model_path);
+}
+
+void Building::find_mesh_instances_recursive(Node *node) {
+    if (!node) return;
+    
+    // Check if this node is a MeshInstance3D
+    MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(node);
+    if (mesh && !mesh_instance) {
+        mesh_instance = mesh;
+        UtilityFunctions::print("Building: Found MeshInstance3D: ", mesh->get_name());
+    }
+    
+    // Recursively check children
+    for (int i = 0; i < node->get_child_count(); i++) {
+        find_mesh_instances_recursive(node->get_child(i));
     }
 }
 
@@ -180,6 +268,13 @@ bool Building::get_hovered() const {
 }
 
 void Building::update_selection_visual() {
+    // If we have a loaded model, apply to all meshes recursively
+    if (model_instance) {
+        apply_selection_to_model(model_instance, is_selected, is_hovered);
+        return;
+    }
+    
+    // Fallback for simple box mesh
     if (!mesh_instance) return;
     
     Ref<StandardMaterial3D> mat = mesh_instance->get_surface_override_material(0);
@@ -204,6 +299,13 @@ void Building::update_selection_visual() {
 }
 
 void Building::update_hover_visual() {
+    // If we have a loaded model, apply to all meshes recursively
+    if (model_instance) {
+        apply_selection_to_model(model_instance, is_selected, is_hovered);
+        return;
+    }
+    
+    // Fallback for simple box mesh
     if (!mesh_instance) return;
     
     Ref<StandardMaterial3D> mat = mesh_instance->get_surface_override_material(0);
@@ -227,6 +329,54 @@ void Building::update_hover_visual() {
         // Default: brown/tan
         mat->set_albedo(Color(0.5f, 0.4f, 0.3f));
         mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, false);
+    }
+}
+
+void Building::apply_selection_to_model(Node *node, bool selected, bool hovered) {
+    if (!node) return;
+    
+    // Check if this node is a MeshInstance3D
+    MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(node);
+    if (mesh) {
+        // Get the mesh to find surface count
+        Ref<Mesh> mesh_res = mesh->get_mesh();
+        if (mesh_res.is_valid()) {
+            int surface_count = mesh_res->get_surface_count();
+            for (int s = 0; s < surface_count; s++) {
+                // Create or get override material
+                Ref<StandardMaterial3D> mat = mesh->get_surface_override_material(s);
+                if (mat.is_null()) {
+                    // Try to get the original material
+                    Ref<Material> original_mat = mesh_res->surface_get_material(s);
+                    Ref<StandardMaterial3D> original_std = original_mat;
+                    
+                    if (original_std.is_valid()) {
+                        // Duplicate the original material so we can modify it
+                        mat = original_std->duplicate();
+                    } else {
+                        mat.instantiate();
+                    }
+                    mesh->set_surface_override_material(s, mat);
+                }
+                
+                if (selected) {
+                    mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                    mat->set_emission(Color(0.1f, 0.5f, 0.1f));
+                    mat->set_emission_energy_multiplier(1.5f);
+                } else if (hovered) {
+                    mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                    mat->set_emission(Color(0.2f, 0.5f, 0.2f));
+                    mat->set_emission_energy_multiplier(0.6f);
+                } else {
+                    mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, false);
+                }
+            }
+        }
+    }
+    
+    // Recursively process children
+    for (int i = 0; i < node->get_child_count(); i++) {
+        apply_selection_to_model(node->get_child(i), selected, hovered);
     }
 }
 
@@ -284,6 +434,22 @@ void Building::set_armor(int value) {
 
 int Building::get_armor() const {
     return armor;
+}
+
+void Building::set_model_path(const String &path) {
+    model_path = path;
+}
+
+String Building::get_model_path() const {
+    return model_path;
+}
+
+void Building::set_model_scale(float scale) {
+    model_scale = scale;
+}
+
+float Building::get_model_scale() const {
+    return model_scale;
 }
 
 } // namespace rts
