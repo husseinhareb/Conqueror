@@ -20,10 +20,18 @@ class Unit : public godot::CharacterBody3D {
 private:
     // Movement settings
     float move_speed = 8.0f;
+    float base_move_speed = 8.0f;         // Store original speed for slope calculations
     float acceleration = 15.0f;
     float deceleration = 20.0f;
     float steering_strength = 5.0f;
     float arrival_threshold = 0.5f;
+    
+    // Terrain following
+    float uphill_speed_multiplier = 0.5f;   // Speed multiplier when going uphill
+    float downhill_speed_multiplier = 1.4f; // Speed multiplier when going downhill
+    float current_slope = 0.0f;             // Current terrain slope (-1 to 1, negative = downhill)
+    float terrain_height = 0.0f;            // Current terrain height
+    float last_terrain_height = 0.0f;       // Previous frame terrain height
     
     // Collision avoidance settings
     float avoidance_radius = 5.0f;        // How far ahead to look for obstacles

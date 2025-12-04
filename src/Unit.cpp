@@ -91,8 +91,11 @@ void Unit::_ready() {
     flow_vector = Vector3(0, 0, 0);
     last_position = get_global_position();
     
-    // Store the base Y offset for walking animation
+    // Store the base speed and Y offset for walking animation
+    base_move_speed = move_speed;
     base_y_offset = 0.0f;
+    terrain_height = get_global_position().y;
+    last_terrain_height = terrain_height;
     
     // Set collision layer to 2 (units)
     set_collision_layer(2);
@@ -626,7 +629,13 @@ void Unit::update_stuck_detection(double delta) {
 
 void Unit::snap_to_terrain() {
     // Find terrain generator and snap to its height
-    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    SceneTree *tree = get_tree();
+    if (!tree) return;
+    
+    Node *root = tree->get_root();
+    if (!root) return;
+    
+    Node *terrain_node = root->find_child("TerrainGenerator", true, false);
     if (!terrain_node) return;
     
     Vector3 pos = get_global_position();
@@ -650,9 +659,32 @@ void Unit::snap_to_terrain() {
     // Get terrain height at current position
     Variant height_result = terrain_node->call("get_height_at", pos.x, pos.z);
     if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
-        float terrain_y = (float)height_result;
-        pos.y = terrain_y;
+        last_terrain_height = terrain_height;
+        terrain_height = (float)height_result;
+        pos.y = terrain_height;
         set_global_position(pos);
+        
+        // Calculate slope based on height change and horizontal movement
+        float horizontal_speed = Vector2(current_velocity.x, current_velocity.z).length();
+        if (horizontal_speed > 0.1f) {
+            float height_diff = terrain_height - last_terrain_height;
+            // Normalize slope: positive = going uphill, negative = going downhill
+            current_slope = Math::clamp(height_diff / (horizontal_speed * 0.016f), -1.0f, 1.0f);
+            
+            // Adjust move speed based on slope
+            if (current_slope > 0.05f) {
+                // Going uphill - slow down
+                float slope_factor = 1.0f - (current_slope * (1.0f - uphill_speed_multiplier));
+                move_speed = base_move_speed * Math::max(slope_factor, uphill_speed_multiplier);
+            } else if (current_slope < -0.05f) {
+                // Going downhill - speed up
+                float slope_factor = 1.0f + (-current_slope * (downhill_speed_multiplier - 1.0f));
+                move_speed = base_move_speed * Math::min(slope_factor, downhill_speed_multiplier);
+            } else {
+                // Flat terrain - normal speed
+                move_speed = base_move_speed;
+            }
+        }
     }
 }
 

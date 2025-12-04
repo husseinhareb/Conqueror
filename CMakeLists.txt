@@ -50,6 +50,7 @@ set(RTS_SOURCES
     src/RTSCamera.cpp
     src/Unit.cpp
     src/Building.cpp
+    src/CommandCenter.cpp
     src/Vehicle.cpp
     src/Bulldozer.cpp
     src/FloorSnapper.cpp

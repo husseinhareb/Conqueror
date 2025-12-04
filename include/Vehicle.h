@@ -24,7 +24,15 @@ protected:
     int health = 200;
     int max_health = 200;
     float move_speed = 4.0f;
+    float base_move_speed = 4.0f;         // Store original speed for slope calculations
     float turn_speed = 3.0f;
+    
+    // Terrain following
+    float uphill_speed_multiplier = 0.4f;   // Speed multiplier when going uphill (vehicles slower)
+    float downhill_speed_multiplier = 1.5f; // Speed multiplier when going downhill
+    float current_slope = 0.0f;             // Current terrain slope
+    float terrain_height = 0.0f;            // Current terrain height
+    float last_terrain_height = 0.0f;       // Previous frame terrain height
     
     // Collision avoidance settings
     float avoidance_radius = 6.0f;        // How far ahead to look for obstacles

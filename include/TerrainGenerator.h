@@ -9,14 +9,22 @@
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/multi_mesh_instance3d.hpp>
+#include <godot_cpp/classes/multi_mesh.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
 #include <godot_cpp/classes/height_map_shape3d.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
+#include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
+#include <godot_cpp/classes/environment.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/sky.hpp>
+#include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
@@ -68,9 +76,9 @@ struct TerrainConfig {
     // Feature settings
     float mountain_threshold = 0.55f; // Height threshold for mountains (lower = more mountains)
     float lake_threshold = 0.25f;    // Height threshold for lakes
-    int lake_count = 2;              // Number of lakes to carve (fewer)
-    float lake_size = 6.0f;          // Average lake radius (smaller)
-    float lake_max_size = 10.0f;     // Maximum lake size
+    int lake_count = 4;              // Number of lakes to carve
+    float lake_size = 40.0f;         // Average lake radius (large natural lakes)
+    float lake_max_size = 80.0f;     // Maximum lake size
     
     // Tree settings
     int tree_count = 2000;           // Number of trees to spawn
@@ -121,10 +129,36 @@ private:
     godot::Ref<godot::StandardMaterial3D> tree_trunk_material;
     godot::Ref<godot::StandardMaterial3D> tree_leaves_material;
     
+    // Grass system
+    godot::MultiMeshInstance3D *grass_instance = nullptr;
+    godot::Ref<godot::MultiMesh> grass_multimesh;
+    godot::Ref<godot::ArrayMesh> grass_blade_mesh;
+    godot::Ref<godot::ShaderMaterial> grass_material;
+    
+    // Environment
+    godot::WorldEnvironment *world_environment = nullptr;
+    godot::DirectionalLight3D *sun_light = nullptr;
+    godot::Ref<godot::Environment> environment;
+    godot::Ref<godot::Sky> sky;
+    
+    // Terrain shader material
+    godot::Ref<godot::ShaderMaterial> terrain_shader_material;
+    godot::Ref<godot::Shader> terrain_shader;
+    
     // Textures
     godot::Ref<godot::ImageTexture> heightmap_texture;
     godot::Ref<godot::ImageTexture> normalmap_texture;
     godot::Ref<godot::ImageTexture> splatmap_texture;
+    
+    // Procedural textures
+    godot::Ref<godot::ImageTexture> grass_texture;
+    godot::Ref<godot::ImageTexture> grass_normal_texture;
+    godot::Ref<godot::ImageTexture> sand_texture;
+    godot::Ref<godot::ImageTexture> sand_normal_texture;
+    godot::Ref<godot::ImageTexture> dirt_texture;
+    godot::Ref<godot::ImageTexture> dirt_normal_texture;
+    godot::Ref<godot::ImageTexture> rock_texture;
+    godot::Ref<godot::ImageTexture> rock_normal_texture;
     
     // Noise generation helpers
     float noise2d(float x, float y, int seed);
@@ -144,10 +178,27 @@ private:
     void create_terrain_mesh();
     void create_terrain_collision();
     void create_water_plane();
+    godot::Ref<godot::ArrayMesh> create_irregular_lake_mesh(float radius, int radial_segments, int rings, int seed);
     void apply_terrain_material();
     void generate_trees();
     void create_tree_mesh();
     bool is_valid_tree_position(float x, float z) const;
+    
+    // Grass system
+    void generate_grass();
+    godot::Ref<godot::ArrayMesh> create_grass_blade_mesh();
+    bool is_valid_grass_position(float x, float z) const;
+    
+    // Texture generation
+    void generate_procedural_textures();
+    godot::Ref<godot::ImageTexture> create_noise_texture(int size, godot::Color base_color, godot::Color variation_color, float frequency, int seed);
+    godot::Ref<godot::ImageTexture> create_normal_from_height(godot::Ref<godot::ImageTexture> height_tex, float strength);
+    
+    // Shader setup
+    void setup_terrain_shader();
+    
+    // Environment setup
+    void setup_environment();
 
 protected:
     static void _bind_methods();

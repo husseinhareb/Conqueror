@@ -107,6 +107,24 @@ void RTSCamera::_process(double delta) {
         return;
     }
     
+    // Safety check: ensure drag panning stops if right mouse button is released
+    // This handles cases where the release event was missed (e.g., window lost focus)
+    Input *input = Input::get_singleton();
+    if (is_drag_panning && !input->is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)) {
+        is_drag_panning = false;
+        if (drag_arrow_sprite) {
+            drag_arrow_sprite->set_visible(false);
+        }
+        if (cursor_sprite) {
+            cursor_sprite->set_visible(true);
+        }
+    }
+    
+    // Same safety check for rotation
+    if (is_rotating && !input->is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE)) {
+        is_rotating = false;
+    }
+    
     update_cursor(delta);
     update_cursor_mode();
     update_selection_box();
@@ -271,14 +289,16 @@ void RTSCamera::_input(const Ref<InputEvent> &event) {
                     selection_box->set_size(Vector2(0, 0));
                 }
             } else {
-                // End selection - perform box selection
-                is_selecting = false;
-                if (selection_box) {
-                    selection_box->set_visible(false);
-                    // Perform box selection if the box has some size
-                    Vector2 box_size = selection_box->get_size();
-                    if (box_size.x > 5.0f || box_size.y > 5.0f) {
-                        perform_box_selection();
+                // End selection - perform box selection only if we were actually box selecting
+                if (is_selecting) {
+                    is_selecting = false;
+                    if (selection_box) {
+                        selection_box->set_visible(false);
+                        // Perform box selection if the box has some size
+                        Vector2 box_size = selection_box->get_size();
+                        if (box_size.x > 5.0f || box_size.y > 5.0f) {
+                            perform_box_selection();
+                        }
                     }
                 }
             }
@@ -420,10 +440,20 @@ void RTSCamera::handle_drag_pan(const Vector2 &relative) {
         float dist = total_offset.length();
         
         if (dist > 15.0f) {
-            // Arrow points DOWN at rotation 0 (positive Y direction)
-            // atan2(x, y) gives angle from Y axis
-            // Negate both to point in direction of mouse movement
-            float angle = atan2(-total_offset.x, -total_offset.y);
+            // Godot 2D rotation: 0 = pointing RIGHT, increases counter-clockwise
+            // The arrow image (down-arrow.png) points DOWN at rotation 0
+            // So: image pointing down = Godot rotation 0 means the image is pre-rotated -90° from Godot's default
+            // 
+            // We want the arrow to point in the direction of total_offset:
+            // - offset (1, 0) = right → arrow should point right → need rotation -π/2 (or +3π/2)
+            // - offset (0, 1) = down → arrow should point down → need rotation 0
+            // - offset (-1, 0) = left → arrow should point left → need rotation π/2
+            // - offset (0, -1) = up → arrow should point up → need rotation π
+            //
+            // Standard atan2(y, x) gives angle from positive X axis, counter-clockwise
+            // We need angle from positive Y axis (down), clockwise
+            // angle = atan2(-x, y) or equivalently: atan2(y, x) - π/2
+            float angle = atan2(total_offset.y, total_offset.x) - Math_PI / 2.0f;
             
             // Snap to 8 directions (every 45 degrees)
             float snap = Math_PI / 4.0f;
@@ -1093,6 +1123,22 @@ void RTSCamera::select_unit(Unit *unit) {
         selected_building = nullptr;
     }
     
+    // Deselect any selected bulldozer
+    if (selected_bulldozer) {
+        selected_bulldozer->set_selected(false);
+        selected_bulldozer = nullptr;
+    }
+    
+    // Clear multi-selection lists
+    for (Unit *u : selected_units) {
+        if (u && u != unit) u->set_selected(false);
+    }
+    selected_units.clear();
+    for (Bulldozer *b : selected_bulldozers) {
+        if (b) b->set_selected(false);
+    }
+    selected_bulldozers.clear();
+    
     // Deselect previous unit
     if (selected_unit && selected_unit != unit) {
         selected_unit->set_selected(false);
@@ -1112,6 +1158,22 @@ void RTSCamera::select_building(Building *building) {
         selected_unit->set_selected(false);
         selected_unit = nullptr;
     }
+    
+    // Deselect any selected bulldozer
+    if (selected_bulldozer) {
+        selected_bulldozer->set_selected(false);
+        selected_bulldozer = nullptr;
+    }
+    
+    // Clear multi-selection lists
+    for (Unit *u : selected_units) {
+        if (u) u->set_selected(false);
+    }
+    selected_units.clear();
+    for (Bulldozer *b : selected_bulldozers) {
+        if (b) b->set_selected(false);
+    }
+    selected_bulldozers.clear();
     
     // Deselect previous building
     if (selected_building && selected_building != building) {
@@ -1256,40 +1318,45 @@ bool RTSCamera::handle_panel_click() {
     // Returns true if click was handled by panel (should block game interaction)
     if (!is_cursor_over_panel()) return false;
     
+    // Get actual mouse position for button detection (not custom cursor)
+    Input *input = Input::get_singleton();
+    Viewport *viewport = get_viewport();
+    Vector2 mouse_pos = viewport ? viewport->get_mouse_position() : cursor_position;
+    
     // Check toggle button
     if (bottom_panel_toggle_btn) {
         Rect2 btn_rect = bottom_panel_toggle_btn->get_global_rect();
-        if (btn_rect.has_point(cursor_position)) {
+        if (btn_rect.has_point(mouse_pos) || btn_rect.has_point(cursor_position)) {
             toggle_bottom_panel();
             return true;
         }
     }
     
-    // Check build buttons
+    // Check build buttons - use both mouse_pos and cursor_position for reliability
     if (build_power_btn && build_power_btn->is_visible()) {
         Rect2 btn_rect = build_power_btn->get_global_rect();
-        if (btn_rect.has_point(cursor_position)) {
+        if (btn_rect.has_point(mouse_pos) || btn_rect.has_point(cursor_position)) {
             on_build_power_pressed();
             return true;
         }
     }
     if (build_barracks_btn && build_barracks_btn->is_visible()) {
         Rect2 btn_rect = build_barracks_btn->get_global_rect();
-        if (btn_rect.has_point(cursor_position)) {
+        if (btn_rect.has_point(mouse_pos) || btn_rect.has_point(cursor_position)) {
             on_build_barracks_pressed();
             return true;
         }
     }
     if (build_bulldozer_btn && build_bulldozer_btn->is_visible()) {
         Rect2 btn_rect = build_bulldozer_btn->get_global_rect();
-        if (btn_rect.has_point(cursor_position)) {
+        if (btn_rect.has_point(mouse_pos) || btn_rect.has_point(cursor_position)) {
             on_build_bulldozer_pressed();
             return true;
         }
     }
     if (train_unit_btn && train_unit_btn->is_visible()) {
         Rect2 btn_rect = train_unit_btn->get_global_rect();
-        if (btn_rect.has_point(cursor_position)) {
+        if (btn_rect.has_point(mouse_pos) || btn_rect.has_point(cursor_position)) {
             on_train_unit_pressed();
             return true;
         }
@@ -1618,6 +1685,16 @@ void RTSCamera::select_bulldozer(Bulldozer *bulldozer) {
         selected_building = nullptr;
     }
     
+    // Clear multi-selection lists
+    for (Unit *u : selected_units) {
+        if (u) u->set_selected(false);
+    }
+    selected_units.clear();
+    for (Bulldozer *b : selected_bulldozers) {
+        if (b && b != bulldozer) b->set_selected(false);
+    }
+    selected_bulldozers.clear();
+    
     // Deselect previous bulldozer
     if (selected_bulldozer && selected_bulldozer != bulldozer) {
         selected_bulldozer->set_selected(false);
@@ -1858,6 +1935,11 @@ void RTSCamera::on_train_unit_pressed() {
 
 void RTSCamera::start_building_placement(int type) {
     if (!selected_bulldozer) return;
+    
+    // Cancel any existing building placement first
+    if (is_placing_building) {
+        cancel_building_placement();
+    }
     
     is_placing_building = true;
     placing_building_type = type;

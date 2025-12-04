@@ -8,10 +8,24 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/surface_tool.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/classes/plane_mesh.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
 #include <godot_cpp/classes/capsule_mesh.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/multi_mesh_instance3d.hpp>
+#include <godot_cpp/classes/multi_mesh.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/geometry_instance3d.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
+#include <godot_cpp/classes/environment.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/sky.hpp>
+#include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cmath>
 #include <vector>
@@ -173,10 +187,18 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     create_terrain_mesh();
     create_terrain_collision();
     create_water_plane();
+    
+    // Setup shaders and materials
+    generate_procedural_textures();
+    setup_terrain_shader();
     apply_terrain_material();
     
-    // Generate trees
+    // Generate vegetation
     generate_trees();
+    generate_grass();
+    
+    // Setup environment (fog, lighting, sky)
+    setup_environment();
     
     UtilityFunctions::print("TerrainGenerator: Terrain generation complete");
 }
@@ -202,6 +224,25 @@ void TerrainGenerator::clear_terrain() {
         lakes_container->queue_free();
         lakes_container = nullptr;
     }
+    if (grass_instance) {
+        grass_instance->queue_free();
+        grass_instance = nullptr;
+    }
+    if (world_environment) {
+        world_environment->queue_free();
+        world_environment = nullptr;
+    }
+    if (sun_light) {
+        sun_light->queue_free();
+        sun_light = nullptr;
+    }
+    grass_multimesh.unref();
+    grass_blade_mesh.unref();
+    grass_material.unref();
+    terrain_shader_material.unref();
+    terrain_shader.unref();
+    environment.unref();
+    sky.unref();
     terrain_collision = nullptr;
     heightmap.clear();
     lake_positions.clear();
@@ -269,36 +310,40 @@ void TerrainGenerator::carve_lakes() {
     // Clear previous lake data
     lake_positions.clear();
     
-    // Lake water level - slightly below average ground level
-    float lake_water_height = 1.0f; // Height where water surface will be
-    float lake_bottom_normalized = (lake_water_height - 0.5f) / config.max_height; // Bottom of lake
+    // Lake water level - the water surface height
+    float lake_water_height = 0.8f; // Slightly below ground level
+    float lake_bottom_normalized = -0.1f / config.max_height; // Deep lake bed (below 0)
     
-    // Use seed to determine lake positions - keep lakes small and scattered
+    // Create several large, natural-looking lakes
     for (int i = 0; i < config.lake_count; i++) {
         // Pseudo-random lake center based on seed
         int hash1 = (config.seed * (i + 1) * 16807) % 2147483647;
         int hash2 = (hash1 * 16807) % 2147483647;
         int hash3 = (hash2 * 16807) % 2147483647;
+        int hash4 = (hash3 * 16807) % 2147483647;
         
         float lake_x = (float)(hash1 % size);
         float lake_z = (float)(hash2 % size);
         
-        // Keep lakes away from edges and center (leave center for base building)
-        lake_x = Math::clamp(lake_x, size * 0.2f, size * 0.8f);
-        lake_z = Math::clamp(lake_z, size * 0.2f, size * 0.8f);
+        // Keep lakes away from edges but allow more of the map
+        lake_x = Math::clamp(lake_x, size * 0.15f, size * 0.85f);
+        lake_z = Math::clamp(lake_z, size * 0.15f, size * 0.85f);
         
         // Avoid placing lakes too close to map center (player start area)
         float center_dist = sqrt(pow(lake_x - half_size, 2) + pow(lake_z - half_size, 2));
-        if (center_dist < size * 0.15f) {
+        if (center_dist < size * 0.12f) {
             // Push lake away from center
             float angle = atan2(lake_z - half_size, lake_x - half_size);
-            lake_x = half_size + cos(angle) * size * 0.25f;
-            lake_z = half_size + sin(angle) * size * 0.25f;
+            lake_x = half_size + cos(angle) * size * 0.2f;
+            lake_z = half_size + sin(angle) * size * 0.2f;
         }
         
-        // Lake size varies - make them reasonably sized
+        // Lake size - make them LARGE and natural
         float size_variation = (float)(hash3 % 100) / 100.0f;
-        float lake_radius = 15.0f + size_variation * 20.0f; // 15 to 35 tiles
+        float lake_radius = config.lake_size + size_variation * (config.lake_max_size - config.lake_size);
+        
+        // Add irregularity to lake shape
+        float shape_variation = 0.3f + (float)(hash4 % 100) / 100.0f * 0.4f; // 0.3 to 0.7
         
         // Convert to world coordinates and store for water plane creation
         float world_x = (lake_x - half_size) * config.tile_size;
@@ -311,29 +356,46 @@ void TerrainGenerator::carve_lakes() {
         lake.water_height = lake_water_height;
         lake_positions.push_back(lake);
         
-        // Carve the lake depression
+        // Carve the lake depression with natural irregular edges
         for (int z = 0; z < size; z++) {
             for (int x = 0; x < size; x++) {
                 float dx = x - lake_x;
                 float dz = z - lake_z;
                 float dist = sqrt(dx * dx + dz * dz);
                 
-                if (dist < lake_radius) {
-                    // Smooth falloff from edge to center
-                    float depth_factor = 1.0f - (dist / lake_radius);
-                    depth_factor = depth_factor * depth_factor; // Quadratic for smooth bowl
+                // Add noise to lake edge for natural shape
+                float angle = atan2(dz, dx);
+                float edge_noise = sin(angle * 5.0f + config.seed) * 0.15f + 
+                                   sin(angle * 8.0f + config.seed * 2) * 0.1f +
+                                   sin(angle * 13.0f + config.seed * 3) * 0.05f;
+                float effective_radius = lake_radius * (1.0f + edge_noise * shape_variation);
+                
+                if (dist < effective_radius) {
+                    // Create deep bowl shape with flat bottom
+                    float edge_factor = dist / effective_radius;
+                    float depth_factor;
+                    
+                    if (edge_factor < 0.7f) {
+                        // Flat deep center (70% of lake is deep)
+                        depth_factor = 1.0f;
+                    } else {
+                        // Smooth shore transition
+                        float shore_factor = (edge_factor - 0.7f) / 0.3f;
+                        depth_factor = 1.0f - (shore_factor * shore_factor);
+                    }
                     
                     float current = heightmap[z * size + x];
-                    // Target is below water level for lake bed
+                    // Target is well below water level for deep lake bed
                     float target = lake_bottom_normalized;
                     
-                    heightmap[z * size + x] = lerp(current, target, depth_factor * 0.8f);
+                    // Blend to create the depression
+                    heightmap[z * size + x] = lerp(current, target, depth_factor * 0.95f);
                 }
             }
         }
     }
     
-    UtilityFunctions::print("TerrainGenerator: Carved ", config.lake_count, " lakes");
+    UtilityFunctions::print("TerrainGenerator: Carved ", config.lake_count, " large lakes");
 }
 
 void TerrainGenerator::smooth_terrain(int iterations) {
@@ -479,22 +541,22 @@ void TerrainGenerator::create_terrain_mesh() {
             // Heights typically range from ~0.5 to ~7, so use appropriate thresholds
             Color color;
             if (height <= config.water_level) {
-                color = Color(0.1f, 0.3f, 0.6f); // Deep water blue
+                color = Color(0.15f, 0.4f, 0.7f); // Deep water blue
             } else if (height < 1.5f) {
-                // Beach/low ground - sandy grass
-                color = Color(0.45f, 0.55f, 0.25f);
+                // Beach/low ground - vibrant grass
+                color = Color(0.35f, 0.65f, 0.2f);
             } else if (height < 3.0f) {
-                // Low grass - bright green
-                color = Color(0.25f, 0.6f, 0.15f);
+                // Low grass - bright vivid green
+                color = Color(0.2f, 0.7f, 0.15f);
             } else if (height < 5.0f) {
-                // Medium grass - darker green
-                color = Color(0.2f, 0.5f, 0.12f);
+                // Medium grass - lush green
+                color = Color(0.15f, 0.6f, 0.1f);
             } else if (height < 7.0f) {
-                // High grass/dirt transition
-                color = Color(0.35f, 0.45f, 0.2f);
+                // High grass - rich green
+                color = Color(0.2f, 0.55f, 0.15f);
             } else if (height < 10.0f) {
-                // Rocky dirt
-                color = Color(0.5f, 0.42f, 0.3f);
+                // Rocky dirt - warmer brown
+                color = Color(0.55f, 0.45f, 0.3f);
             } else if (height < 14.0f) {
                 // Mountain rock
                 color = Color(0.5f, 0.5f, 0.5f);
@@ -587,51 +649,280 @@ void TerrainGenerator::create_water_plane() {
     lakes_container->set_name("Lakes");
     add_child(lakes_container);
     
-    // Create shared water material
-    Ref<StandardMaterial3D> water_mat;
-    water_mat.instantiate();
-    water_mat->set_albedo(Color(0.2f, 0.45f, 0.65f, 0.75f));
-    water_mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
-    water_mat->set_roughness(0.05f);
-    water_mat->set_metallic(0.4f);
-    water_mat->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
+    // Try to load water shader
+    Ref<ShaderMaterial> water_shader_mat;
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    String water_shader_path = "res://shaders/water.gdshader";
     
-    // Create a water plane for each lake
+    if (loader && FileAccess::file_exists(water_shader_path)) {
+        Ref<Shader> water_shader = loader->load(water_shader_path);
+        if (water_shader.is_valid()) {
+            water_shader_mat.instantiate();
+            water_shader_mat->set_shader(water_shader);
+            
+            // Realistic water colors
+            water_shader_mat->set_shader_parameter("water_color_shallow", Color(0.1f, 0.35f, 0.5f));
+            water_shader_mat->set_shader_parameter("water_color_deep", Color(0.02f, 0.1f, 0.2f));
+            water_shader_mat->set_shader_parameter("water_color_fresnel", Color(0.12f, 0.3f, 0.42f));
+            
+            // Gerstner wave parameters - gentle lake waves
+            water_shader_mat->set_shader_parameter("wave_speed", 0.6f);
+            water_shader_mat->set_shader_parameter("wave_scale", 0.015f);
+            
+            // Wave 1 - Large gentle swell
+            water_shader_mat->set_shader_parameter("wave1_amplitude", 0.25f);
+            water_shader_mat->set_shader_parameter("wave1_frequency", 0.08f);
+            water_shader_mat->set_shader_parameter("wave1_steepness", 0.4f);
+            water_shader_mat->set_shader_parameter("wave1_direction", Vector2(1.0f, 0.2f));
+            
+            // Wave 2 - Medium waves
+            water_shader_mat->set_shader_parameter("wave2_amplitude", 0.15f);
+            water_shader_mat->set_shader_parameter("wave2_frequency", 0.15f);
+            water_shader_mat->set_shader_parameter("wave2_steepness", 0.35f);
+            water_shader_mat->set_shader_parameter("wave2_direction", Vector2(0.6f, 0.8f));
+            
+            // Wave 3 - Small choppy waves
+            water_shader_mat->set_shader_parameter("wave3_amplitude", 0.08f);
+            water_shader_mat->set_shader_parameter("wave3_frequency", 0.3f);
+            water_shader_mat->set_shader_parameter("wave3_steepness", 0.3f);
+            water_shader_mat->set_shader_parameter("wave3_direction", Vector2(-0.3f, 0.95f));
+            
+            // Wave 4 - Micro ripples
+            water_shader_mat->set_shader_parameter("wave4_amplitude", 0.04f);
+            water_shader_mat->set_shader_parameter("wave4_frequency", 0.6f);
+            water_shader_mat->set_shader_parameter("wave4_steepness", 0.2f);
+            water_shader_mat->set_shader_parameter("wave4_direction", Vector2(0.85f, -0.5f));
+            
+            // Surface properties
+            water_shader_mat->set_shader_parameter("roughness", 0.04f);
+            water_shader_mat->set_shader_parameter("metallic", 0.1f);
+            water_shader_mat->set_shader_parameter("opacity", 0.96f);
+            
+            // Fresnel
+            water_shader_mat->set_shader_parameter("fresnel_power", 4.5f);
+            water_shader_mat->set_shader_parameter("fresnel_bias", 0.03f);
+            
+            // Reflection
+            water_shader_mat->set_shader_parameter("reflection_strength", 0.75f);
+            water_shader_mat->set_shader_parameter("sky_color", Color(0.5f, 0.7f, 0.95f));
+            
+            // Foam (subtle for lakes)
+            water_shader_mat->set_shader_parameter("foam_amount", 0.15f);
+            water_shader_mat->set_shader_parameter("foam_cutoff", 0.8f);
+            water_shader_mat->set_shader_parameter("foam_color", Color(0.95f, 0.98f, 1.0f));
+            
+            // Subsurface scattering
+            water_shader_mat->set_shader_parameter("sss_strength", 0.35f);
+            water_shader_mat->set_shader_parameter("sss_color", Color(0.08f, 0.45f, 0.35f));
+            
+            // Caustics
+            water_shader_mat->set_shader_parameter("caustic_strength", 0.12f);
+            water_shader_mat->set_shader_parameter("caustic_scale", 0.025f);
+            
+            // Try to load water normal map textures if available
+            String normal1_path = "res://assets/textures/water_normal_1.png";
+            String normal2_path = "res://assets/textures/water_normal_2.png";
+            
+            if (FileAccess::file_exists(normal1_path)) {
+                Ref<Texture2D> water_normal1 = loader->load(normal1_path);
+                if (water_normal1.is_valid()) {
+                    water_shader_mat->set_shader_parameter("normal_map_1", water_normal1);
+                    UtilityFunctions::print("TerrainGenerator: Water normal map 1 loaded");
+                }
+            }
+            
+            if (FileAccess::file_exists(normal2_path)) {
+                Ref<Texture2D> water_normal2 = loader->load(normal2_path);
+                if (water_normal2.is_valid()) {
+                    water_shader_mat->set_shader_parameter("normal_map_2", water_normal2);
+                    UtilityFunctions::print("TerrainGenerator: Water normal map 2 loaded");
+                }
+            }
+            
+            water_shader_mat->set_shader_parameter("normal_map_scale", 0.04f);
+            water_shader_mat->set_shader_parameter("normal_map_strength", 0.5f);
+            
+            UtilityFunctions::print("TerrainGenerator: Realistic Gerstner wave water shader loaded");
+        }
+    }
+    
+    // Fallback material if shader not available
+    Ref<StandardMaterial3D> water_mat_fallback;
+    if (!water_shader_mat.is_valid()) {
+        water_mat_fallback.instantiate();
+        water_mat_fallback->set_albedo(Color(0.05f, 0.15f, 0.25f, 0.95f));
+        water_mat_fallback->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
+        water_mat_fallback->set_roughness(0.02f);
+        water_mat_fallback->set_metallic(0.6f);
+        water_mat_fallback->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
+    }
+    
+    // Create an irregular circular water mesh for each lake
     for (size_t i = 0; i < lake_positions.size(); i++) {
         const LakeData &lake = lake_positions[i];
         
-        // Create circular-ish water plane (use subdivided plane)
-        Ref<PlaneMesh> water_plane;
-        water_plane.instantiate();
-        float plane_size = lake.radius * 2.0f * 0.85f; // Slightly smaller than carved area
-        water_plane->set_size(Vector2(plane_size, plane_size));
-        water_plane->set_subdivide_width(8);
-        water_plane->set_subdivide_depth(8);
+        // Generate irregular circular mesh
+        Ref<ArrayMesh> lake_mesh_data = create_irregular_lake_mesh(
+            lake.radius, 
+            64,  // Number of radial segments
+            24,  // Number of rings
+            config.seed + (int)i * 1000
+        );
         
         MeshInstance3D *lake_mesh = memnew(MeshInstance3D);
-        lake_mesh->set_mesh(water_plane);
-        lake_mesh->set_surface_override_material(0, water_mat);
-        lake_mesh->set_position(Vector3(lake.world_x, lake.water_height, lake.world_z));
+        lake_mesh->set_mesh(lake_mesh_data);
+        
+        if (water_shader_mat.is_valid()) {
+            lake_mesh->set_surface_override_material(0, water_shader_mat);
+        } else {
+            lake_mesh->set_surface_override_material(0, water_mat_fallback);
+        }
+        
+        lake_mesh->set_position(Vector3(lake.world_x, lake.water_height + 0.05f, lake.world_z));
         lake_mesh->set_name(String("Lake_") + String::num_int64(i));
         
         lakes_container->add_child(lake_mesh);
     }
     
-    UtilityFunctions::print("TerrainGenerator: Created ", lake_positions.size(), " lake water planes");
+    UtilityFunctions::print("TerrainGenerator: Created ", lake_positions.size(), " irregular lake meshes");
+}
+
+// Creates an irregular circular mesh for natural-looking lake shapes
+Ref<ArrayMesh> TerrainGenerator::create_irregular_lake_mesh(float radius, int radial_segments, int rings, int seed) {
+    // Generate irregular lake mesh with noise-based edge variation
+    PackedVector3Array vertices;
+    PackedVector3Array normals;
+    PackedVector2Array uvs;
+    PackedInt32Array indices;
+    
+    // Reserve space
+    int total_vertices = 1 + radial_segments * rings; // center + rings
+    vertices.resize(total_vertices);
+    normals.resize(total_vertices);
+    uvs.resize(total_vertices);
+    
+    // Center vertex
+    vertices[0] = Vector3(0, 0, 0);
+    normals[0] = Vector3(0, 1, 0);
+    uvs[0] = Vector2(0.5f, 0.5f);
+    
+    // Generate ring vertices with noise-based edge variation
+    int vertex_idx = 1;
+    for (int ring = 0; ring < rings; ring++) {
+        float ring_ratio = (float)(ring + 1) / (float)rings;
+        float base_ring_radius = radius * ring_ratio;
+        
+        for (int seg = 0; seg < radial_segments; seg++) {
+            float angle = (float)seg / (float)radial_segments * Math_PI * 2.0f;
+            
+            // Add noise variation for outer rings (creates irregular shoreline)
+            float noise_strength = 0.0f;
+            if (ring >= rings - 4) {  // Only affect outer 4 rings
+                float outer_ratio = (float)(ring - (rings - 4)) / 4.0f;
+                noise_strength = 0.15f * outer_ratio;  // Up to 15% variation
+            }
+            
+            // Multi-frequency noise for natural shoreline
+            float noise_x = Math::cos(angle) * 3.0f + seed * 0.1f;
+            float noise_z = Math::sin(angle) * 3.0f + seed * 0.1f;
+            float edge_noise = noise2d(noise_x, noise_z, seed);
+            edge_noise += 0.5f * noise2d(noise_x * 2.3f, noise_z * 2.3f, seed + 1);
+            edge_noise += 0.25f * noise2d(noise_x * 5.1f, noise_z * 5.1f, seed + 2);
+            edge_noise = (edge_noise / 1.75f) * 2.0f - 1.0f;  // Normalize to -1 to 1
+            
+            float radius_variation = 1.0f + edge_noise * noise_strength;
+            float final_radius = base_ring_radius * radius_variation;
+            
+            // For the outermost ring, add extra "bay" and "peninsula" features
+            if (ring == rings - 1) {
+                // Add larger features (bays and peninsulas)
+                float feature_noise = noise2d(noise_x * 0.5f, noise_z * 0.5f, seed + 3);
+                feature_noise = (feature_noise * 2.0f - 1.0f) * 0.2f;  // ±20% variation
+                final_radius *= (1.0f + feature_noise);
+            }
+            
+            float x = Math::cos(angle) * final_radius;
+            float z = Math::sin(angle) * final_radius;
+            
+            vertices[vertex_idx] = Vector3(x, 0, z);
+            normals[vertex_idx] = Vector3(0, 1, 0);
+            
+            // UV coordinates for texture mapping (circular mapping)
+            float u = 0.5f + Math::cos(angle) * ring_ratio * 0.5f;
+            float v = 0.5f + Math::sin(angle) * ring_ratio * 0.5f;
+            uvs[vertex_idx] = Vector2(u, v);
+            
+            vertex_idx++;
+        }
+    }
+    
+    // Generate triangles
+    // Inner fan (center to first ring)
+    for (int seg = 0; seg < radial_segments; seg++) {
+        int next_seg = (seg + 1) % radial_segments;
+        indices.push_back(0);  // Center
+        indices.push_back(1 + seg);
+        indices.push_back(1 + next_seg);
+    }
+    
+    // Ring strips
+    for (int ring = 0; ring < rings - 1; ring++) {
+        int ring_start = 1 + ring * radial_segments;
+        int next_ring_start = ring_start + radial_segments;
+        
+        for (int seg = 0; seg < radial_segments; seg++) {
+            int next_seg = (seg + 1) % radial_segments;
+            
+            int v0 = ring_start + seg;
+            int v1 = ring_start + next_seg;
+            int v2 = next_ring_start + seg;
+            int v3 = next_ring_start + next_seg;
+            
+            // Two triangles per quad
+            indices.push_back(v0);
+            indices.push_back(v2);
+            indices.push_back(v1);
+            
+            indices.push_back(v1);
+            indices.push_back(v2);
+            indices.push_back(v3);
+        }
+    }
+    
+    // Create the mesh
+    Ref<ArrayMesh> mesh;
+    mesh.instantiate();
+    
+    Array arrays;
+    arrays.resize(Mesh::ARRAY_MAX);
+    arrays[Mesh::ARRAY_VERTEX] = vertices;
+    arrays[Mesh::ARRAY_NORMAL] = normals;
+    arrays[Mesh::ARRAY_TEX_UV] = uvs;
+    arrays[Mesh::ARRAY_INDEX] = indices;
+    
+    mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+    
+    return mesh;
 }
 
 void TerrainGenerator::apply_terrain_material() {
     if (!terrain_mesh) return;
     
-    // Create a basic material with vertex colors
-    Ref<StandardMaterial3D> mat;
-    mat.instantiate();
-    mat->set_flag(StandardMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
-    mat->set_roughness(0.9f);
-    mat->set_metallic(0.0f);
-    mat->set_cull_mode(StandardMaterial3D::CULL_DISABLED); // Show both sides
-    
-    terrain_mesh->set_surface_override_material(0, mat);
+    // Use shader material if available, otherwise fall back to vertex colors
+    if (terrain_shader_material.is_valid()) {
+        terrain_mesh->set_surface_override_material(0, terrain_shader_material);
+        UtilityFunctions::print("TerrainGenerator: Applied shader material to terrain");
+    } else {
+        // Create a basic material with vertex colors as fallback
+        Ref<StandardMaterial3D> mat;
+        mat.instantiate();
+        mat->set_flag(StandardMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+        mat->set_roughness(0.9f);
+        mat->set_metallic(0.0f);
+        mat->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
+        terrain_mesh->set_surface_override_material(0, mat);
+        UtilityFunctions::print("TerrainGenerator: Applied fallback vertex color material");
+    }
 }
 
 float TerrainGenerator::get_height_at(float x, float z) const {
@@ -817,21 +1108,75 @@ void TerrainGenerator::generate_trees() {
     trees_container->set_name("Trees");
     add_child(trees_container);
     
-    // Create cylinder mesh for trunk
-    Ref<CylinderMesh> trunk_mesh;
-    trunk_mesh.instantiate();
-    trunk_mesh->set_top_radius(0.15f);
-    trunk_mesh->set_bottom_radius(0.25f);
-    trunk_mesh->set_height(2.0f);
-    trunk_mesh->set_radial_segments(6);
+    // === PINE TREE MESHES ===
+    // Trunk for pine trees (tall and thin)
+    Ref<CylinderMesh> pine_trunk_mesh;
+    pine_trunk_mesh.instantiate();
+    pine_trunk_mesh->set_top_radius(0.12f);
+    pine_trunk_mesh->set_bottom_radius(0.22f);
+    pine_trunk_mesh->set_height(3.5f);
+    pine_trunk_mesh->set_radial_segments(6);
     
-    // Create cone mesh for leaves (cylinder with top_radius = 0)
-    Ref<CylinderMesh> leaves_mesh;
-    leaves_mesh.instantiate();
-    leaves_mesh->set_top_radius(0.0f);      // Point at top = cone shape
-    leaves_mesh->set_bottom_radius(1.2f);
-    leaves_mesh->set_height(3.0f);
-    leaves_mesh->set_radial_segments(8);
+    // Multiple cone layers for pine trees (bottom, middle, top)
+    Ref<CylinderMesh> pine_cone_bottom;
+    pine_cone_bottom.instantiate();
+    pine_cone_bottom->set_top_radius(0.0f);
+    pine_cone_bottom->set_bottom_radius(1.8f);
+    pine_cone_bottom->set_height(2.5f);
+    pine_cone_bottom->set_radial_segments(8);
+    
+    Ref<CylinderMesh> pine_cone_middle;
+    pine_cone_middle.instantiate();
+    pine_cone_middle->set_top_radius(0.0f);
+    pine_cone_middle->set_bottom_radius(1.4f);
+    pine_cone_middle->set_height(2.0f);
+    pine_cone_middle->set_radial_segments(8);
+    
+    Ref<CylinderMesh> pine_cone_top;
+    pine_cone_top.instantiate();
+    pine_cone_top->set_top_radius(0.0f);
+    pine_cone_top->set_bottom_radius(0.9f);
+    pine_cone_top->set_height(1.5f);
+    pine_cone_top->set_radial_segments(8);
+    
+    // === DECIDUOUS TREE MESHES ===
+    // Trunk for deciduous trees (shorter, thicker)
+    Ref<CylinderMesh> decid_trunk_mesh;
+    decid_trunk_mesh.instantiate();
+    decid_trunk_mesh->set_top_radius(0.18f);
+    decid_trunk_mesh->set_bottom_radius(0.35f);
+    decid_trunk_mesh->set_height(2.5f);
+    decid_trunk_mesh->set_radial_segments(8);
+    
+    // Spherical canopy for deciduous (using capsule for rounded look)
+    Ref<CapsuleMesh> decid_canopy;
+    decid_canopy.instantiate();
+    decid_canopy->set_radius(1.5f);
+    decid_canopy->set_height(3.0f);
+    decid_canopy->set_radial_segments(12);
+    decid_canopy->set_rings(6);
+    
+    // Additional smaller spheres for fuller canopy
+    Ref<CapsuleMesh> decid_canopy_small;
+    decid_canopy_small.instantiate();
+    decid_canopy_small->set_radius(0.9f);
+    decid_canopy_small->set_height(1.8f);
+    decid_canopy_small->set_radial_segments(8);
+    decid_canopy_small->set_rings(4);
+    
+    // Create darker green material for pine trees - rich forest green
+    Ref<StandardMaterial3D> pine_leaves_material;
+    pine_leaves_material.instantiate();
+    pine_leaves_material->set_albedo(Color(0.08f, 0.35f, 0.12f)); // Forest green
+    pine_leaves_material->set_roughness(0.9f);
+    pine_leaves_material->set_metallic(0.0f);
+    
+    // Create lighter green material for deciduous trees - vibrant
+    Ref<StandardMaterial3D> decid_leaves_material;
+    decid_leaves_material.instantiate();
+    decid_leaves_material->set_albedo(Color(0.12f, 0.55f, 0.15f)); // Vibrant green
+    decid_leaves_material->set_roughness(0.85f);
+    decid_leaves_material->set_metallic(0.0f);
     
     float half_world = (config.map_size * config.tile_size) * 0.5f;
     
@@ -842,6 +1187,8 @@ void TerrainGenerator::generate_trees() {
     int attempts = 0;
     int max_attempts = config.tree_count * 10; // Prevent infinite loop
     int trees_placed = 0;
+    int pine_count = 0;
+    int decid_count = 0;
     
     while (trees_placed < config.tree_count && attempts < max_attempts) {
         attempts++;
@@ -868,7 +1215,7 @@ void TerrainGenerator::generate_trees() {
         if (too_close) continue;
         
         // Get terrain height at this position
-        float height = get_height_at(x, z);
+        float terrain_height = get_height_at(x, z);
         
         // Random tree size variation
         int hash3 = (hash2 * 69621) % 2147483647;
@@ -877,32 +1224,604 @@ void TerrainGenerator::generate_trees() {
         // Random rotation
         float rotation = ((float)(hash3 % 360));
         
+        // Determine tree type based on height and randomness
+        // Pine trees prefer higher elevations, deciduous prefer lower
+        int hash4 = (hash3 * 45678) % 2147483647;
+        float type_rand = (float)(hash4 % 100) / 100.0f;
+        float height_factor = (terrain_height - config.water_level) / (config.ground_level - config.water_level);
+        height_factor = Math::clamp(height_factor, 0.0f, 1.0f);
+        
+        // Higher terrain = more likely to be pine
+        bool is_pine = type_rand < (0.3f + height_factor * 0.5f);
+        
         // Create tree node
         Node3D *tree = memnew(Node3D);
-        tree->set_position(Vector3(x, height, z));
+        tree->set_position(Vector3(x, terrain_height, z));
         tree->set_rotation_degrees(Vector3(0, rotation, 0));
         tree->set_scale(Vector3(scale, scale, scale));
         
-        // Add trunk
-        MeshInstance3D *trunk = memnew(MeshInstance3D);
-        trunk->set_mesh(trunk_mesh);
-        trunk->set_position(Vector3(0, 1.0f, 0)); // Offset up by half height
-        trunk->set_surface_override_material(0, tree_trunk_material);
-        tree->add_child(trunk);
-        
-        // Add leaves
-        MeshInstance3D *leaves = memnew(MeshInstance3D);
-        leaves->set_mesh(leaves_mesh);
-        leaves->set_position(Vector3(0, 3.0f, 0)); // On top of trunk
-        leaves->set_surface_override_material(0, tree_leaves_material);
-        tree->add_child(leaves);
+        if (is_pine) {
+            // === PINE TREE ===
+            pine_count++;
+            
+            // Add trunk
+            MeshInstance3D *trunk = memnew(MeshInstance3D);
+            trunk->set_mesh(pine_trunk_mesh);
+            trunk->set_position(Vector3(0, 1.75f, 0));
+            trunk->set_surface_override_material(0, tree_trunk_material);
+            tree->add_child(trunk);
+            
+            // Add bottom cone layer
+            MeshInstance3D *cone1 = memnew(MeshInstance3D);
+            cone1->set_mesh(pine_cone_bottom);
+            cone1->set_position(Vector3(0, 3.0f, 0));
+            cone1->set_surface_override_material(0, pine_leaves_material);
+            tree->add_child(cone1);
+            
+            // Add middle cone layer
+            MeshInstance3D *cone2 = memnew(MeshInstance3D);
+            cone2->set_mesh(pine_cone_middle);
+            cone2->set_position(Vector3(0, 4.5f, 0));
+            cone2->set_surface_override_material(0, pine_leaves_material);
+            tree->add_child(cone2);
+            
+            // Add top cone layer
+            MeshInstance3D *cone3 = memnew(MeshInstance3D);
+            cone3->set_mesh(pine_cone_top);
+            cone3->set_position(Vector3(0, 5.8f, 0));
+            cone3->set_surface_override_material(0, pine_leaves_material);
+            tree->add_child(cone3);
+            
+        } else {
+            // === DECIDUOUS TREE ===
+            decid_count++;
+            
+            // Add trunk
+            MeshInstance3D *trunk = memnew(MeshInstance3D);
+            trunk->set_mesh(decid_trunk_mesh);
+            trunk->set_position(Vector3(0, 1.25f, 0));
+            trunk->set_surface_override_material(0, tree_trunk_material);
+            tree->add_child(trunk);
+            
+            // Add main canopy
+            MeshInstance3D *canopy = memnew(MeshInstance3D);
+            canopy->set_mesh(decid_canopy);
+            canopy->set_position(Vector3(0, 3.8f, 0));
+            canopy->set_surface_override_material(0, decid_leaves_material);
+            tree->add_child(canopy);
+            
+            // Add secondary canopy lumps for fuller look
+            int hash5 = (hash4 * 12345) % 2147483647;
+            int lump_count = 2 + (hash5 % 3); // 2-4 extra lumps
+            
+            for (int i = 0; i < lump_count; i++) {
+                int lump_hash = hash5 + i * 9876;
+                float lump_angle = ((float)(lump_hash % 360)) * Math_PI / 180.0f;
+                float lump_dist = 0.6f + ((float)((lump_hash >> 8) % 100) / 100.0f) * 0.5f;
+                float lump_height = 3.2f + ((float)((lump_hash >> 16) % 100) / 100.0f) * 1.2f;
+                
+                MeshInstance3D *lump = memnew(MeshInstance3D);
+                lump->set_mesh(decid_canopy_small);
+                lump->set_position(Vector3(
+                    cos(lump_angle) * lump_dist,
+                    lump_height,
+                    sin(lump_angle) * lump_dist
+                ));
+                lump->set_surface_override_material(0, decid_leaves_material);
+                tree->add_child(lump);
+            }
+        }
         
         trees_container->add_child(tree);
         placed_trees.push_back(new_pos);
         trees_placed++;
     }
     
-    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees");
+    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees (", pine_count, " pine, ", decid_count, " deciduous)");
+}
+
+void TerrainGenerator::generate_procedural_textures() {
+    UtilityFunctions::print("TerrainGenerator: Generating procedural textures...");
+    
+    // Create noise-based textures for terrain
+    int tex_size = 512;
+    
+    // Grass texture - vibrant greens
+    grass_texture = create_noise_texture(tex_size, Color(0.15f, 0.5f, 0.1f), Color(0.25f, 0.65f, 0.15f), 32.0f, config.seed);
+    
+    // Sand texture - warm golden sand
+    sand_texture = create_noise_texture(tex_size, Color(0.85f, 0.75f, 0.5f), Color(0.95f, 0.85f, 0.6f), 24.0f, config.seed + 1);
+    
+    // Dirt texture - rich brown
+    dirt_texture = create_noise_texture(tex_size, Color(0.45f, 0.32f, 0.18f), Color(0.55f, 0.4f, 0.25f), 28.0f, config.seed + 2);
+    
+    // Rock texture - natural grey with some warmth
+    rock_texture = create_noise_texture(tex_size, Color(0.45f, 0.43f, 0.4f), Color(0.6f, 0.58f, 0.55f), 16.0f, config.seed + 3);
+    
+    // Generate normal maps from the textures
+    grass_normal_texture = create_normal_from_height(grass_texture, 1.0f);
+    sand_normal_texture = create_normal_from_height(sand_texture, 0.5f);
+    dirt_normal_texture = create_normal_from_height(dirt_texture, 0.8f);
+    rock_normal_texture = create_normal_from_height(rock_texture, 1.5f);
+    
+    UtilityFunctions::print("TerrainGenerator: Procedural textures created");
+}
+
+Ref<ImageTexture> TerrainGenerator::create_noise_texture(int size, Color base_color, Color variation_color, float frequency, int seed) {
+    Ref<Image> image = Image::create(size, size, false, Image::FORMAT_RGB8);
+    
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            // Generate noise using simple hash-based approach
+            int hash = (seed + x * 374761393 + y * 668265263) % 2147483647;
+            hash = (hash ^ (hash >> 13)) * 1274126177;
+            hash = hash ^ (hash >> 16);
+            
+            // Multi-octave noise
+            float noise = 0.0f;
+            float amplitude = 1.0f;
+            float freq = frequency;
+            float max_amp = 0.0f;
+            
+            for (int oct = 0; oct < 4; oct++) {
+                int hx = (int)(x * freq / size) + seed + oct * 1000;
+                int hy = (int)(y * freq / size) + seed + oct * 2000;
+                int h = (hx * 374761393 + hy * 668265263) % 2147483647;
+                h = (h ^ (h >> 13)) * 1274126177;
+                h = h ^ (h >> 16);
+                
+                float n = ((float)(h % 10000) / 10000.0f);
+                noise += n * amplitude;
+                max_amp += amplitude;
+                amplitude *= 0.5f;
+                freq *= 2.0f;
+            }
+            noise /= max_amp;
+            
+            // Blend between base and variation color
+            Color pixel = base_color.lerp(variation_color, noise);
+            image->set_pixel(x, y, pixel);
+        }
+    }
+    
+    Ref<ImageTexture> texture = ImageTexture::create_from_image(image);
+    return texture;
+}
+
+Ref<ImageTexture> TerrainGenerator::create_normal_from_height(Ref<ImageTexture> height_tex, float strength) {
+    if (!height_tex.is_valid()) {
+        Ref<ImageTexture> empty;
+        return empty;
+    }
+    
+    Ref<Image> height_image = height_tex->get_image();
+    if (!height_image.is_valid()) {
+        Ref<ImageTexture> empty;
+        return empty;
+    }
+    
+    int width = height_image->get_width();
+    int height = height_image->get_height();
+    
+    Ref<Image> normal_image = Image::create(width, height, false, Image::FORMAT_RGB8);
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            // Sample neighboring pixels (wrap around)
+            int xL = (x - 1 + width) % width;
+            int xR = (x + 1) % width;
+            int yU = (y - 1 + height) % height;
+            int yD = (y + 1) % height;
+            
+            // Get heights (using luminance as height)
+            float hL = height_image->get_pixel(xL, y).get_luminance();
+            float hR = height_image->get_pixel(xR, y).get_luminance();
+            float hU = height_image->get_pixel(x, yU).get_luminance();
+            float hD = height_image->get_pixel(x, yD).get_luminance();
+            
+            // Calculate normal
+            float dx = (hL - hR) * strength;
+            float dy = (hU - hD) * strength;
+            
+            Vector3 normal = Vector3(dx, dy, 1.0f).normalized();
+            
+            // Convert to color (0-1 range, with 0.5 being center)
+            Color normal_color = Color(
+                normal.x * 0.5f + 0.5f,
+                normal.y * 0.5f + 0.5f,
+                normal.z * 0.5f + 0.5f
+            );
+            
+            normal_image->set_pixel(x, y, normal_color);
+        }
+    }
+    
+    Ref<ImageTexture> texture = ImageTexture::create_from_image(normal_image);
+    return texture;
+}
+
+void TerrainGenerator::setup_terrain_shader() {
+    UtilityFunctions::print("TerrainGenerator: Setting up terrain shader...");
+    
+    // Check if shader file exists
+    String shader_path = "res://shaders/terrain.gdshader";
+    if (!FileAccess::file_exists(shader_path)) {
+        UtilityFunctions::print("TerrainGenerator: Shader file not found at ", shader_path);
+        return;
+    }
+    
+    // Try to load the shader
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    if (!loader) {
+        UtilityFunctions::print("TerrainGenerator: ResourceLoader not available");
+        return;
+    }
+    
+    terrain_shader = loader->load(shader_path);
+    if (!terrain_shader.is_valid()) {
+        UtilityFunctions::print("TerrainGenerator: Failed to load terrain shader");
+        return;
+    }
+    
+    // Create shader material
+    terrain_shader_material.instantiate();
+    terrain_shader_material->set_shader(terrain_shader);
+    
+    // Set shader parameters
+    float world_size = config.map_size * config.tile_size;
+    terrain_shader_material->set_shader_parameter("terrain_size", world_size);
+    terrain_shader_material->set_shader_parameter("uv_scale", 0.05f);
+    terrain_shader_material->set_shader_parameter("blend_sharpness", 4.0f);
+    terrain_shader_material->set_shader_parameter("grass_height_max", 8.0f);
+    terrain_shader_material->set_shader_parameter("sand_height_max", 4.0f);
+    terrain_shader_material->set_shader_parameter("rock_slope_min", 0.6f);
+    terrain_shader_material->set_shader_parameter("water_level", config.water_level);
+    
+    // Set textures if available
+    if (grass_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("grass_albedo", grass_texture);
+    }
+    if (sand_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("sand_albedo", sand_texture);
+    }
+    if (dirt_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("dirt_albedo", dirt_texture);
+    }
+    if (rock_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("rock_albedo", rock_texture);
+    }
+    
+    // Set normal maps if available
+    if (grass_normal_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("grass_normal", grass_normal_texture);
+    }
+    if (sand_normal_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("sand_normal", sand_normal_texture);
+    }
+    if (dirt_normal_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("dirt_normal", dirt_normal_texture);
+    }
+    if (rock_normal_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("rock_normal", rock_normal_texture);
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Terrain shader setup complete");
+}
+
+Ref<ArrayMesh> TerrainGenerator::create_grass_blade_mesh() {
+    Ref<ArrayMesh> mesh;
+    mesh.instantiate();
+    
+    // Create a simple grass blade shape (triangle fan)
+    PackedVector3Array vertices;
+    PackedVector3Array normals;
+    PackedVector2Array uvs;
+    PackedInt32Array indices;
+    
+    // Grass blade dimensions
+    float blade_width = 0.08f;
+    float blade_height = 0.6f;
+    
+    // Bottom left
+    vertices.push_back(Vector3(-blade_width * 0.5f, 0.0f, 0.0f));
+    normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+    uvs.push_back(Vector2(0.0f, 1.0f));
+    
+    // Bottom right
+    vertices.push_back(Vector3(blade_width * 0.5f, 0.0f, 0.0f));
+    normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+    uvs.push_back(Vector2(1.0f, 1.0f));
+    
+    // Middle left
+    vertices.push_back(Vector3(-blade_width * 0.35f, blade_height * 0.5f, 0.02f));
+    normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+    uvs.push_back(Vector2(0.15f, 0.5f));
+    
+    // Middle right
+    vertices.push_back(Vector3(blade_width * 0.35f, blade_height * 0.5f, 0.02f));
+    normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+    uvs.push_back(Vector2(0.85f, 0.5f));
+    
+    // Top (pointed tip)
+    vertices.push_back(Vector3(0.0f, blade_height, 0.05f));
+    normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+    uvs.push_back(Vector2(0.5f, 0.0f));
+    
+    // Indices for two triangles (front face)
+    // Bottom triangle
+    indices.push_back(0);
+    indices.push_back(1);
+    indices.push_back(2);
+    
+    indices.push_back(1);
+    indices.push_back(3);
+    indices.push_back(2);
+    
+    // Top triangle
+    indices.push_back(2);
+    indices.push_back(3);
+    indices.push_back(4);
+    
+    // Back faces (flip winding)
+    indices.push_back(2);
+    indices.push_back(1);
+    indices.push_back(0);
+    
+    indices.push_back(2);
+    indices.push_back(3);
+    indices.push_back(1);
+    
+    indices.push_back(4);
+    indices.push_back(3);
+    indices.push_back(2);
+    
+    Array arrays;
+    arrays.resize(Mesh::ARRAY_MAX);
+    arrays[Mesh::ARRAY_VERTEX] = vertices;
+    arrays[Mesh::ARRAY_NORMAL] = normals;
+    arrays[Mesh::ARRAY_TEX_UV] = uvs;
+    arrays[Mesh::ARRAY_INDEX] = indices;
+    
+    mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+    
+    return mesh;
+}
+
+bool TerrainGenerator::is_valid_grass_position(float x, float z) const {
+    // Check bounds
+    if (!is_within_bounds(x, z)) return false;
+    
+    // Get height
+    float height = get_height_at(x, z);
+    
+    // No grass in water
+    if (height <= config.water_level + 0.3f) return false;
+    
+    // No grass on very high mountains
+    if (height > config.ground_level + 15.0f) return false;
+    
+    // Check slope - no grass on steep slopes
+    Vector3 normal = get_normal_at(x, z);
+    float slope = 1.0f - normal.y;
+    if (slope > 0.4f) return false;
+    
+    return true;
+}
+
+void TerrainGenerator::generate_grass() {
+    UtilityFunctions::print("TerrainGenerator: Generating grass...");
+    
+    // Create grass blade mesh
+    grass_blade_mesh = create_grass_blade_mesh();
+    
+    // Create grass material with shader
+    grass_material.instantiate();
+    
+    // Try to load grass shader
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    String grass_shader_path = "res://shaders/grass.gdshader";
+    
+    if (loader && FileAccess::file_exists(grass_shader_path)) {
+        Ref<Shader> grass_shader = loader->load(grass_shader_path);
+        if (grass_shader.is_valid()) {
+            grass_material->set_shader(grass_shader);
+            grass_material->set_shader_parameter("grass_color_base", Color(0.1f, 0.4f, 0.08f));
+            grass_material->set_shader_parameter("grass_color_tip", Color(0.3f, 0.65f, 0.2f));
+            grass_material->set_shader_parameter("wind_strength", 0.12f);
+            grass_material->set_shader_parameter("wind_speed", 1.2f);
+            UtilityFunctions::print("TerrainGenerator: Grass shader loaded");
+        }
+    }
+    
+    // Create MultiMesh
+    grass_multimesh.instantiate();
+    grass_multimesh->set_mesh(grass_blade_mesh);
+    grass_multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+    grass_multimesh->set_use_colors(true);
+    
+    // Collect valid grass positions
+    std::vector<Transform3D> grass_transforms;
+    std::vector<Color> grass_colors;
+    
+    float half_world = (config.map_size * config.tile_size) * 0.5f;
+    float grass_spacing = 1.5f; // Space between grass clumps
+    int grass_per_clump = 5;    // Number of blades per clump
+    
+    int max_grass = 50000; // Limit for performance
+    
+    for (float z = -half_world + 5.0f; z < half_world - 5.0f && (int)grass_transforms.size() < max_grass; z += grass_spacing) {
+        for (float x = -half_world + 5.0f; x < half_world - 5.0f && (int)grass_transforms.size() < max_grass; x += grass_spacing) {
+            // Add some randomness to position
+            int hash = (config.seed + (int)(x * 100) * 374761393 + (int)(z * 100) * 668265263) % 2147483647;
+            float offset_x = ((float)(hash % 1000) / 1000.0f - 0.5f) * grass_spacing * 0.8f;
+            float offset_z = ((float)((hash >> 10) % 1000) / 1000.0f - 0.5f) * grass_spacing * 0.8f;
+            
+            float px = x + offset_x;
+            float pz = z + offset_z;
+            
+            if (!is_valid_grass_position(px, pz)) continue;
+            
+            float height = get_height_at(px, pz);
+            
+            // Create a small clump of grass blades
+            for (int i = 0; i < grass_per_clump; i++) {
+                int clump_hash = hash + i * 12345;
+                float cx = px + ((float)(clump_hash % 100) / 100.0f - 0.5f) * 0.5f;
+                float cz = pz + ((float)((clump_hash >> 8) % 100) / 100.0f - 0.5f) * 0.5f;
+                float ch = get_height_at(cx, cz);
+                
+                // Random rotation and scale
+                float rotation = ((float)((clump_hash >> 4) % 360));
+                float scale = 0.6f + ((float)((clump_hash >> 12) % 100) / 100.0f) * 0.8f;
+                
+                Transform3D transform;
+                transform = transform.scaled(Vector3(scale, scale, scale));
+                transform = transform.rotated(Vector3(0, 1, 0), Math::deg_to_rad(rotation));
+                transform.origin = Vector3(cx, ch, cz);
+                
+                grass_transforms.push_back(transform);
+                
+                // Slight color variation
+                float color_var = ((float)((clump_hash >> 16) % 100) / 100.0f) * 0.2f;
+                grass_colors.push_back(Color(0.9f + color_var, 1.0f, 0.9f + color_var));
+            }
+        }
+    }
+    
+    if (grass_transforms.empty()) {
+        UtilityFunctions::print("TerrainGenerator: No valid grass positions found");
+        return;
+    }
+    
+    // Set up MultiMesh instances
+    int grass_count = (int)grass_transforms.size();
+    grass_multimesh->set_instance_count(grass_count);
+    
+    for (int i = 0; i < grass_count; i++) {
+        grass_multimesh->set_instance_transform(i, grass_transforms[i]);
+        grass_multimesh->set_instance_color(i, grass_colors[i]);
+    }
+    
+    // Create MultiMeshInstance3D
+    grass_instance = memnew(MultiMeshInstance3D);
+    grass_instance->set_name("Grass");
+    grass_instance->set_multimesh(grass_multimesh);
+    
+    if (grass_material.is_valid()) {
+        grass_instance->set_material_override(grass_material);
+    }
+    
+    // Grass should cast shadows but be transparent
+    grass_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_ON);
+    
+    add_child(grass_instance);
+    
+    UtilityFunctions::print("TerrainGenerator: Generated ", grass_count, " grass blades");
+}
+
+void TerrainGenerator::setup_environment() {
+    UtilityFunctions::print("TerrainGenerator: Setting up environment...");
+    
+    // === CREATE SKY ===
+    Ref<ProceduralSkyMaterial> sky_material;
+    sky_material.instantiate();
+    
+    // Set sky colors for a vibrant sunny day
+    sky_material->set_sky_top_color(Color(0.25f, 0.5f, 0.95f));       // Vivid blue at top
+    sky_material->set_sky_horizon_color(Color(0.6f, 0.8f, 1.0f));     // Bright horizon
+    sky_material->set_ground_bottom_color(Color(0.25f, 0.35f, 0.2f)); // Green-ish ground
+    sky_material->set_ground_horizon_color(Color(0.45f, 0.55f, 0.4f)); // Greenish horizon
+    sky_material->set_sun_angle_max(45.0f);
+    sky_material->set_sun_curve(0.1f);
+    
+    // Create sky
+    sky.instantiate();
+    sky->set_material(sky_material);
+    sky->set_radiance_size(Sky::RADIANCE_SIZE_256);
+    
+    // === CREATE ENVIRONMENT ===
+    environment.instantiate();
+    environment->set_sky(sky);
+    environment->set_background(Environment::BG_SKY);
+    
+    // Ambient light settings - brighter and more colorful
+    environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+    environment->set_ambient_light_color(Color(0.7f, 0.75f, 0.8f));
+    environment->set_ambient_light_energy(0.6f);
+    environment->set_ambient_light_sky_contribution(0.8f);
+    
+    // Reflected light from sky
+    environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
+    
+    // Tonemap settings - boost saturation and brightness
+    environment->set_tonemapper(Environment::TONE_MAPPER_ACES);
+    environment->set_tonemap_exposure(1.1f);
+    environment->set_tonemap_white(1.2f);
+    
+    // SSAO for ambient occlusion
+    environment->set_ssao_enabled(true);
+    environment->set_ssao_radius(1.5f);
+    environment->set_ssao_intensity(2.0f);
+    environment->set_ssao_power(1.5f);
+    
+    // Fog settings - subtle distance fog only
+    environment->set_fog_enabled(true);
+    environment->set_fog_light_color(Color(0.75f, 0.82f, 0.9f));    // Light blue-white fog
+    environment->set_fog_light_energy(0.8f);
+    environment->set_fog_sun_scatter(0.1f);                          // Subtle scattering
+    
+    // Fog density settings - much lighter fog
+    float world_size = config.map_size * config.tile_size;
+    environment->set_fog_density(0.0005f);                           // Very light fog
+    environment->set_fog_aerial_perspective(0.2f);                   // Subtle aerial perspective
+    environment->set_fog_sky_affect(0.1f);                           // Minimal sky affect
+    
+    // Height fog - only near water
+    environment->set_fog_height(config.water_level - 2.0f);          // Below water level
+    environment->set_fog_height_density(0.02f);                      // Light height fog
+    
+    // Glow/bloom for sun and bright areas (subtle)
+    environment->set_glow_enabled(true);
+    environment->set_glow_intensity(0.5f);
+    environment->set_glow_strength(0.8f);
+    environment->set_glow_bloom(0.1f);
+    environment->set_glow_blend_mode(Environment::GLOW_BLEND_MODE_SOFTLIGHT);
+    
+    // Create WorldEnvironment node
+    world_environment = memnew(WorldEnvironment);
+    world_environment->set_name("WorldEnvironment");
+    world_environment->set_environment(environment);
+    add_child(world_environment);
+    
+    // === CREATE SUN LIGHT ===
+    sun_light = memnew(DirectionalLight3D);
+    sun_light->set_name("Sun");
+    
+    // Sun direction - slightly angled for nice shadows
+    sun_light->set_rotation_degrees(Vector3(-45.0f, -30.0f, 0.0f));
+    
+    // Sun color - bright warm light
+    sun_light->set_color(Color(1.0f, 0.98f, 0.9f));
+    sun_light->set_param(Light3D::PARAM_ENERGY, 1.2f);
+    sun_light->set_param(Light3D::PARAM_INDIRECT_ENERGY, 1.0f);
+    
+    // Shadow settings
+    sun_light->set_shadow(true);
+    sun_light->set_param(Light3D::PARAM_SHADOW_OPACITY, 0.7f);
+    sun_light->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f);
+    sun_light->set_shadow_mode(DirectionalLight3D::SHADOW_PARALLEL_4_SPLITS);
+    
+    // Shadow distance based on map size
+    float shadow_distance = Math::min(world_size * 0.5f, 500.0f);
+    sun_light->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, shadow_distance);
+    
+    // Enable shadow for terrain and trees
+    sun_light->set_param(Light3D::PARAM_SHADOW_NORMAL_BIAS, 1.0f);
+    sun_light->set_param(Light3D::PARAM_SHADOW_BIAS, 0.05f);
+    
+    add_child(sun_light);
+    
+    UtilityFunctions::print("TerrainGenerator: Environment setup complete (fog, sky, sun)");
 }
 
 } // namespace rts
