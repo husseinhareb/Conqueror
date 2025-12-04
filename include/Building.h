@@ -1,7 +1,7 @@
 /**
  * Building.h
  * RTS building class - static structures that can be selected.
- * Buildings are large square structures with no collision with units.
+ * Buildings are large square structures with collision detection for placement validation.
  */
 
 #ifndef BUILDING_H
@@ -26,6 +26,11 @@ private:
     int max_health = 500;
     float building_size = 4.0f;  // Size of the square base
     float building_height = 3.0f;
+    
+    // Placement validation
+    bool is_placement_valid = true;
+    bool is_preview_mode = false;
+    uint32_t placement_check_mask = 0b1110; // Units(2), Buildings(4), Vehicles(8)
     
     // State
     bool is_selected = false;
@@ -57,8 +62,10 @@ public:
     void create_building_mesh();
     void load_model();
     void setup_collision();
+    void snap_to_terrain();
     void find_mesh_instances_recursive(godot::Node *node);
     void apply_selection_to_model(godot::Node *node, bool selected, bool hovered);
+    void apply_placement_color_to_model(godot::Node *node, bool valid);
 
     // Selection
     void set_selected(bool selected);
@@ -98,6 +105,15 @@ public:
     
     void set_model_scale(float scale);
     float get_model_scale() const;
+    
+    // Placement validation
+    bool can_place_at(const godot::Vector3 &position);
+    bool check_placement_valid();
+    void set_preview_mode(bool preview);
+    bool get_preview_mode() const;
+    void update_preview_visual();
+    void notify_flow_field_of_placement();
+    static bool is_position_valid_for_building(godot::Node *context, const godot::Vector3 &position, float size, uint32_t check_mask);
 
     // Signals
     // signal building_selected(building: Building)

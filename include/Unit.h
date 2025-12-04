@@ -2,6 +2,7 @@
  * Unit.h
  * RTS unit class with movement, selection state, and flow field integration.
  * Supports receiving move orders and smooth steering movement.
+ * Includes collision avoidance for buildings, other units, and vehicles.
  */
 
 #ifndef UNIT_H
@@ -23,6 +24,20 @@ private:
     float deceleration = 20.0f;
     float steering_strength = 5.0f;
     float arrival_threshold = 0.5f;
+    
+    // Collision avoidance settings
+    float avoidance_radius = 5.0f;        // How far ahead to look for obstacles
+    float avoidance_strength = 15.0f;     // How strongly to avoid obstacles
+    float separation_radius = 1.2f;       // Minimum distance from other units
+    float separation_strength = 10.0f;    // How strongly to separate from other units
+    float wall_follow_distance = 2.0f;    // Distance to maintain when following walls
+    uint32_t obstacle_mask = 0b0100;      // Layer 4: Buildings only (for steering avoidance)
+    
+    // Pathfinding state
+    bool is_avoiding = false;             // Currently avoiding an obstacle
+    float avoid_direction = 0.0f;         // -1 = left, 1 = right
+    float stuck_timer = 0.0f;             // Time spent possibly stuck
+    godot::Vector3 last_position;         // For stuck detection
     
     // Walking animation
     float walk_bob_amount = 0.08f;  // Vertical bobbing
@@ -70,6 +85,15 @@ public:
     void update_movement(double delta);
     void update_walk_animation(double delta);
     godot::Vector3 calculate_steering(const godot::Vector3 &desired_velocity) const;
+    
+    // Collision avoidance
+    godot::Vector3 calculate_avoidance_force();
+    godot::Vector3 calculate_separation_force();
+    godot::Vector3 find_clear_direction(const godot::Vector3 &preferred_dir);
+    bool check_path_blocked(const godot::Vector3 &direction, float distance);
+    float raycast_distance(const godot::Vector3 &direction, float max_distance);
+    void update_stuck_detection(double delta);
+    void snap_to_terrain();
 
     // Selection
     void set_selected(bool selected);

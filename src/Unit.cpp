@@ -1,13 +1,22 @@
 /**
  * Unit.cpp
  * RTS unit implementation with movement, selection, and flow field integration.
+ * Includes collision avoidance for buildings, other units, and vehicles.
  */
 
 #include "Unit.h"
 
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -80,9 +89,16 @@ void Unit::_ready() {
     target_position = get_global_position();
     current_velocity = Vector3(0, 0, 0);
     flow_vector = Vector3(0, 0, 0);
+    last_position = get_global_position();
     
     // Store the base Y offset for walking animation
     base_y_offset = 0.0f;
+    
+    // Set collision layer to 2 (units)
+    set_collision_layer(2);
+    // Collide with ground (1) and buildings (4) - physical collision prevents passing through
+    // Also collide with other units (2) and vehicles (8) for physical blocking
+    set_collision_mask(1 | 2 | 4 | 8);
 }
 
 void Unit::_physics_process(double delta) {
@@ -118,6 +134,7 @@ void Unit::update_movement(double delta) {
             set_velocity(current_velocity);
             move_and_slide();
         }
+        is_avoiding = false;
         return;
     }
     
@@ -131,20 +148,53 @@ void Unit::update_movement(double delta) {
     if (distance < arrival_threshold) {
         has_move_order = false;
         current_velocity = Vector3(0, 0, 0);
+        is_avoiding = false;
         emit_signal("unit_arrived", this);
         return;
     }
     
-    // Calculate desired velocity
-    Vector3 desired_velocity;
+    // Update stuck detection
+    update_stuck_detection(delta);
     
+    // Calculate base desired direction toward target
+    Vector3 desired_direction = to_target.normalized();
+    
+    // Use flow field if available
     if (use_flow_field && flow_vector.length_squared() > 0.01f) {
-        // Use flow field direction
-        desired_velocity = flow_vector.normalized() * move_speed;
-    } else {
-        // Direct path to target
-        desired_velocity = to_target.normalized() * move_speed;
+        desired_direction = flow_vector.normalized();
     }
+    
+    // Check if path ahead is blocked
+    float forward_distance = raycast_distance(desired_direction, avoidance_radius);
+    bool path_blocked = forward_distance < avoidance_radius * 0.8f;
+    
+    Vector3 move_direction = desired_direction;
+    
+    if (path_blocked) {
+        // Find a clear direction to go around the obstacle
+        move_direction = find_clear_direction(desired_direction);
+        is_avoiding = true;
+    } else {
+        // Path is clear, but check if we were avoiding and should continue
+        if (is_avoiding) {
+            // Check if the direct path to target is now clear
+            Vector3 direct_to_target = to_target.normalized();
+            float direct_distance = raycast_distance(direct_to_target, avoidance_radius);
+            if (direct_distance >= avoidance_radius * 0.9f) {
+                is_avoiding = false;
+            } else {
+                // Continue with avoidance direction
+                move_direction = find_clear_direction(desired_direction);
+            }
+        }
+    }
+    
+    // Add separation from other units
+    Vector3 separation = calculate_separation_force();
+    move_direction = (move_direction + separation * 0.3f).normalized();
+    
+    // Calculate desired velocity
+    Vector3 desired_velocity = move_direction * move_speed;
     
     // Apply steering
     Vector3 steering = calculate_steering(desired_velocity);
@@ -158,6 +208,9 @@ void Unit::update_movement(double delta) {
     // Apply movement
     set_velocity(current_velocity);
     move_and_slide();
+    
+    // Snap to terrain height
+    snap_to_terrain();
     
     // Rotate to face movement direction
     if (current_velocity.length_squared() > 0.1f) {
@@ -396,6 +449,211 @@ void Unit::set_attack_range(float range) {
 
 float Unit::get_attack_range() const {
     return attack_range;
+}
+
+Vector3 Unit::calculate_avoidance_force() {
+    // This is now a simpler force-based backup, main avoidance is in find_clear_direction
+    Vector3 avoidance_force = Vector3(0, 0, 0);
+    
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return avoidance_force;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return avoidance_force;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 forward = current_velocity.normalized();
+    if (forward.length_squared() < 0.01f) {
+        forward = -get_transform().basis.get_column(2);
+    }
+    
+    // Simple forward check for immediate obstacles
+    float ahead_dist = raycast_distance(forward, wall_follow_distance);
+    if (ahead_dist < wall_follow_distance) {
+        // Push away from the obstacle
+        float strength = (1.0f - ahead_dist / wall_follow_distance) * avoidance_strength;
+        avoidance_force = -forward * strength;
+    }
+    
+    return avoidance_force;
+}
+
+Vector3 Unit::calculate_separation_force() {
+    Vector3 separation_force = Vector3(0, 0, 0);
+    
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return separation_force;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return separation_force;
+    
+    Vector3 current_pos = get_global_position();
+    
+    // Use shape query to find nearby units
+    Ref<SphereShape3D> sphere;
+    sphere.instantiate();
+    sphere->set_radius(separation_radius);
+    
+    Ref<PhysicsShapeQueryParameters3D> shape_query;
+    shape_query.instantiate();
+    shape_query->set_shape(sphere);
+    shape_query->set_transform(Transform3D(Basis(), current_pos + Vector3(0, 0.5f, 0)));
+    shape_query->set_collision_mask(2 | 8); // Units and vehicles
+    shape_query->set_exclude(TypedArray<RID>::make(get_rid()));
+    
+    TypedArray<Dictionary> results = space_state->intersect_shape(shape_query, 10);
+    
+    for (int i = 0; i < results.size(); i++) {
+        Dictionary result = results[i];
+        Object *collider_obj = Object::cast_to<Object>(result["collider"]);
+        if (!collider_obj) continue;
+        
+        Node3D *other = Object::cast_to<Node3D>(collider_obj);
+        if (!other || other == this) continue;
+        
+        Vector3 other_pos = other->get_global_position();
+        Vector3 away = current_pos - other_pos;
+        away.y = 0;
+        
+        float dist = away.length();
+        if (dist > 0.01f && dist < separation_radius) {
+            float strength = (1.0f - dist / separation_radius) * separation_strength;
+            separation_force += away.normalized() * strength;
+        }
+    }
+    
+    return separation_force;
+}
+
+Vector3 Unit::find_clear_direction(const Vector3 &preferred_dir) {
+    // Context steering: cast rays in multiple directions and find the best open path
+    const int num_directions = 16;
+    float best_score = -1000.0f;
+    Vector3 best_direction = preferred_dir;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 to_target = (target_position - current_pos).normalized();
+    
+    for (int i = 0; i < num_directions; i++) {
+        float angle = (i * 2.0f * Math_PI) / num_directions;
+        Vector3 dir = Vector3(Math::sin(angle), 0, Math::cos(angle));
+        
+        // Raycast in this direction
+        float clearance = raycast_distance(dir, avoidance_radius);
+        
+        // Score this direction
+        // Higher clearance is better
+        float clearance_score = clearance / avoidance_radius;
+        
+        // Prefer directions toward the target
+        float target_alignment = dir.dot(to_target);
+        float target_score = (target_alignment + 1.0f) * 0.5f; // 0 to 1
+        
+        // Prefer directions aligned with preferred direction (momentum)
+        float momentum_alignment = dir.dot(preferred_dir);
+        float momentum_score = (momentum_alignment + 1.0f) * 0.25f; // 0 to 0.5
+        
+        // Combined score - clearance is most important, then target direction
+        float score = clearance_score * 2.0f + target_score * 1.5f + momentum_score;
+        
+        // If path is blocked, heavily penalize
+        if (clearance < 1.0f) {
+            score -= 5.0f;
+        }
+        
+        if (score > best_score) {
+            best_score = score;
+            best_direction = dir;
+        }
+    }
+    
+    // If we found a clear direction, remember which side we're going around
+    if (best_direction.cross(preferred_dir).y > 0) {
+        avoid_direction = 1.0f; // Going right
+    } else {
+        avoid_direction = -1.0f; // Going left
+    }
+    
+    return best_direction;
+}
+
+float Unit::raycast_distance(const Vector3 &direction, float max_distance) {
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return max_distance;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return max_distance;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 from = current_pos + Vector3(0, 0.5f, 0);
+    Vector3 to = from + direction.normalized() * max_distance;
+    
+    Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(from, to);
+    query->set_collision_mask(obstacle_mask); // Buildings only for pathfinding
+    query->set_exclude(TypedArray<RID>::make(get_rid()));
+    
+    Dictionary result = space_state->intersect_ray(query);
+    
+    if (result.is_empty()) {
+        return max_distance;
+    }
+    
+    Vector3 hit_pos = result["position"];
+    return (hit_pos - from).length();
+}
+
+bool Unit::check_path_blocked(const Vector3 &direction, float distance) {
+    return raycast_distance(direction, distance) < distance;
+}
+
+void Unit::update_stuck_detection(double delta) {
+    Vector3 current_pos = get_global_position();
+    float moved_distance = (current_pos - last_position).length();
+    
+    if (moved_distance < 0.05f * delta) {
+        stuck_timer += delta;
+        if (stuck_timer > 1.0f) {
+            // We're stuck, try a different avoidance direction
+            avoid_direction = -avoid_direction;
+            stuck_timer = 0.0f;
+        }
+    } else {
+        stuck_timer = 0.0f;
+    }
+    
+    last_position = current_pos;
+}
+
+void Unit::snap_to_terrain() {
+    // Find terrain generator and snap to its height
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (!terrain_node) return;
+    
+    Vector3 pos = get_global_position();
+    
+    // Check if within bounds
+    Variant bounds_result = terrain_node->call("is_within_bounds", pos.x, pos.z);
+    if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
+        // Out of bounds - push back toward center
+        float world_size = 0.0f;
+        Variant size_result = terrain_node->call("get_world_size");
+        if (size_result.get_type() == Variant::FLOAT) {
+            world_size = (float)size_result * 0.5f - 5.0f; // 5 unit buffer from edge
+        } else {
+            world_size = 100.0f; // Fallback
+        }
+        
+        pos.x = Math::clamp(pos.x, -world_size, world_size);
+        pos.z = Math::clamp(pos.z, -world_size, world_size);
+    }
+    
+    // Get terrain height at current position
+    Variant height_result = terrain_node->call("get_height_at", pos.x, pos.z);
+    if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+        float terrain_y = (float)height_result;
+        pos.y = terrain_y;
+        set_global_position(pos);
+    }
 }
 
 } // namespace rts

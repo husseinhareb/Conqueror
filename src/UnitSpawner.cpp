@@ -14,8 +14,15 @@
 #include <godot_cpp/classes/capsule_mesh.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
 #include <godot_cpp/classes/capsule_shape3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -93,6 +100,41 @@ Unit* UnitSpawner::spawn_unit(const Vector3 &position) {
         return nullptr;
     }
     
+    // Validate spawn position against terrain
+    Vector3 spawn_pos = position;
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (terrain_node) {
+        // Check if within bounds
+        Variant bounds_result = terrain_node->call("is_within_bounds", position.x, position.z);
+        if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
+            UtilityFunctions::print("UnitSpawner: Cannot spawn unit outside terrain bounds");
+            return nullptr;
+        }
+        
+        // Check if not in water
+        Variant water_result = terrain_node->call("is_water_at", position.x, position.z);
+        if (water_result.get_type() == Variant::BOOL && (bool)water_result) {
+            UtilityFunctions::print("UnitSpawner: Cannot spawn unit in water");
+            return nullptr;
+        }
+        
+        // Get terrain height
+        Variant height_result = terrain_node->call("get_height_at", position.x, position.z);
+        if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+            spawn_pos.y = (float)height_result;
+        }
+    }
+    
+    // Check for collisions at spawn location
+    if (!is_spawn_location_valid(spawn_pos)) {
+        // Try to find a nearby valid position
+        spawn_pos = find_valid_spawn_location(spawn_pos, 5.0f);
+        if (spawn_pos.y < -1000.0f) {
+            UtilityFunctions::print("UnitSpawner: No valid spawn location found");
+            return nullptr;
+        }
+    }
+    
     Unit *unit = memnew(Unit);
     unit->set_unit_id(next_unit_id++);
     
@@ -123,11 +165,13 @@ Unit* UnitSpawner::spawn_unit(const Vector3 &position) {
     
     // Set position and add to scene
     add_child(unit);
-    unit->set_global_position(position);
+    unit->set_global_position(spawn_pos);
     
     // Set collision layer for unit (layer 2)
+    // Collision mask: Ground(1), Units(2), Buildings(4), Vehicles(8)
+    // This ensures units physically cannot pass through buildings or each other
     unit->set_collision_layer(2);
-    unit->set_collision_mask(1); // Collide with ground
+    unit->set_collision_mask(1 | 2 | 4 | 8);
     
     // Register with selection manager
     if (selection_manager) {
@@ -313,6 +357,71 @@ void UnitSpawner::set_auto_spawn_count(int count) {
 
 int UnitSpawner::get_auto_spawn_count() const {
     return auto_spawn_count;
+}
+
+bool UnitSpawner::is_spawn_location_valid(const Vector3 &position) {
+    // Check for collisions with existing objects
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return true; // Assume valid if no world
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return true;
+    
+    // Use a sphere shape to check for overlapping objects
+    Ref<SphereShape3D> check_shape;
+    check_shape.instantiate();
+    check_shape->set_radius(0.5f); // Slightly larger than unit radius
+    
+    Ref<PhysicsShapeQueryParameters3D> shape_query;
+    shape_query.instantiate();
+    shape_query->set_shape(check_shape);
+    shape_query->set_transform(Transform3D(Basis(), position + Vector3(0, 0.5f, 0)));
+    shape_query->set_collision_mask(2 | 4 | 8); // Units, Buildings, Vehicles
+    
+    TypedArray<Dictionary> results = space_state->intersect_shape(shape_query, 1);
+    
+    return results.size() == 0;
+}
+
+Vector3 UnitSpawner::find_valid_spawn_location(const Vector3 &center, float search_radius) {
+    // Try to find a valid spawn location in a spiral pattern around the center
+    const int max_attempts = 16;
+    const float angle_step = Math_PI * 2.0f / 8.0f;
+    
+    for (float radius = 1.0f; radius <= search_radius; radius += 1.0f) {
+        for (int i = 0; i < 8; i++) {
+            float angle = i * angle_step;
+            Vector3 test_pos = center;
+            test_pos.x += radius * Math::cos(angle);
+            test_pos.z += radius * Math::sin(angle);
+            
+            // Get terrain height at test position
+            Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+            if (terrain_node) {
+                Variant bounds_result = terrain_node->call("is_within_bounds", test_pos.x, test_pos.z);
+                if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
+                    continue; // Outside bounds
+                }
+                
+                Variant water_result = terrain_node->call("is_water_at", test_pos.x, test_pos.z);
+                if (water_result.get_type() == Variant::BOOL && (bool)water_result) {
+                    continue; // In water
+                }
+                
+                Variant height_result = terrain_node->call("get_height_at", test_pos.x, test_pos.z);
+                if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+                    test_pos.y = (float)height_result;
+                }
+            }
+            
+            if (is_spawn_location_valid(test_pos)) {
+                return test_pos;
+            }
+        }
+    }
+    
+    // Return invalid position marker
+    return Vector3(0, -9999.0f, 0);
 }
 
 } // namespace rts

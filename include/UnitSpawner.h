@@ -97,6 +97,10 @@ public:
     
     void set_auto_spawn_count(int count);
     int get_auto_spawn_count() const;
+    
+    // Spawn validation
+    bool is_spawn_location_valid(const godot::Vector3 &position);
+    godot::Vector3 find_valid_spawn_location(const godot::Vector3 &center, float search_radius);
 };
 
 } // namespace rts

@@ -8,6 +8,8 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
 #include <godot_cpp/classes/immediate_mesh.hpp>
@@ -26,6 +28,8 @@ void FlowFieldManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_flow_direction", "world_pos"), &FlowFieldManager::get_flow_direction);
     ClassDB::bind_method(D_METHOD("is_position_walkable", "world_pos"), &FlowFieldManager::is_position_walkable);
     ClassDB::bind_method(D_METHOD("is_field_valid"), &FlowFieldManager::is_field_valid);
+    ClassDB::bind_method(D_METHOD("refresh_walkability_area", "center", "radius"), &FlowFieldManager::refresh_walkability_area);
+    ClassDB::bind_method(D_METHOD("mark_building_area", "position", "size", "walkable"), &FlowFieldManager::mark_building_area);
     
     // Properties
     ClassDB::bind_method(D_METHOD("set_cell_size", "size"), &FlowFieldManager::set_cell_size);
@@ -52,7 +56,23 @@ void FlowFieldManager::_ready() {
         return;
     }
     
-    // Set grid origin to center the grid
+    // Try to match grid to terrain size
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (terrain_node) {
+        Variant map_size = terrain_node->get("map_size");
+        Variant tile_size = terrain_node->get("tile_size");
+        if (map_size.get_type() == Variant::INT && tile_size.get_type() == Variant::FLOAT) {
+            int terrain_size = (int)map_size;
+            float terrain_tile = (float)tile_size;
+            // Match grid to terrain dimensions
+            grid_width = terrain_size;
+            grid_height = terrain_size;
+            cell_size = terrain_tile;
+            UtilityFunctions::print("FlowFieldManager: Matched terrain - size=", terrain_size, " tile=", terrain_tile);
+        }
+    }
+    
+    // Set grid origin to center the grid (matching terrain center)
     grid_origin = Vector3(
         -grid_width * cell_size / 2.0f,
         0,
@@ -60,6 +80,9 @@ void FlowFieldManager::_ready() {
     );
     
     initialize_grid();
+    
+    // Store terrain reference for walkability queries
+    terrain_generator = terrain_node;
 }
 
 void FlowFieldManager::_process(double delta) {
@@ -103,7 +126,41 @@ void FlowFieldManager::update_walkability() {
         for (int y = 0; y < grid_height; y++) {
             Vector3 world_pos = grid_to_world(x, y);
             
-            // Raycast down to check for obstacles
+            // First check: is this position on valid terrain?
+            bool on_terrain = true;
+            bool is_water = false;
+            bool is_buildable = true;
+            float terrain_height = 0.0f;
+            
+            if (terrain_generator) {
+                // Query terrain for this position
+                Variant height_result = terrain_generator->call("get_height_at", world_pos.x, world_pos.z);
+                Variant water_result = terrain_generator->call("is_water_at", world_pos.x, world_pos.z);
+                Variant buildable_result = terrain_generator->call("is_buildable_at", world_pos.x, world_pos.z);
+                
+                if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+                    terrain_height = (float)height_result;
+                    // Check if terrain exists (very low height indicates off-map)
+                    on_terrain = terrain_height > -50.0f;
+                }
+                
+                if (water_result.get_type() == Variant::BOOL) {
+                    is_water = (bool)water_result;
+                }
+                
+                if (buildable_result.get_type() == Variant::BOOL) {
+                    is_buildable = (bool)buildable_result;
+                }
+            }
+            
+            // Terrain must be valid and not water
+            if (!on_terrain || is_water) {
+                grid[x][y].walkable = false;
+                grid[x][y].cost = 999.0f;
+                continue;
+            }
+            
+            // Second check: raycast for obstacles (buildings)
             Vector3 from = world_pos + Vector3(0, terrain_sample_height, 0);
             Vector3 to = world_pos - Vector3(0, terrain_sample_height, 0);
             
@@ -112,9 +169,75 @@ void FlowFieldManager::update_walkability() {
             
             Dictionary result = space_state->intersect_ray(query);
             
+            // Cell is unwalkable if there's a building/obstacle there
+            bool has_obstacle = !result.is_empty();
+            
+            grid[x][y].walkable = !has_obstacle;
+            
+            // Set cost based on terrain type (steep areas cost more)
+            if (!is_buildable && grid[x][y].walkable) {
+                // Steeper terrain (mountains, cliffs) have higher cost
+                grid[x][y].cost = 2.0f;
+            } else {
+                grid[x][y].cost = 1.0f;
+            }
+        }
+    }
+}
+
+void FlowFieldManager::refresh_walkability_area(const Vector3 &center, float radius) {
+    // Refresh walkability for cells within radius of the center point
+    int cells_radius = static_cast<int>(radius / cell_size) + 1;
+    Vector2i center_cell = world_to_grid(center);
+    
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return;
+    
+    for (int dx = -cells_radius; dx <= cells_radius; dx++) {
+        for (int dy = -cells_radius; dy <= cells_radius; dy++) {
+            int x = center_cell.x + dx;
+            int y = center_cell.y + dy;
+            
+            if (!is_valid_cell(x, y)) continue;
+            
+            Vector3 world_pos = grid_to_world(x, y);
+            
+            Vector3 from = world_pos + Vector3(0, terrain_sample_height, 0);
+            Vector3 to = world_pos - Vector3(0, terrain_sample_height, 0);
+            
+            Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(from, to);
+            query->set_collision_mask(obstacle_collision_layer);
+            
+            Dictionary result = space_state->intersect_ray(query);
             grid[x][y].walkable = result.is_empty();
         }
     }
+    
+    // Invalidate the current flow field so it gets recomputed
+    field_computed = false;
+}
+
+void FlowFieldManager::mark_building_area(const Vector3 &position, float size, bool walkable) {
+    // Mark cells covered by a building as walkable or unwalkable
+    int cells_radius = static_cast<int>(size / cell_size / 2.0f) + 1;
+    Vector2i center_cell = world_to_grid(position);
+    
+    for (int dx = -cells_radius; dx <= cells_radius; dx++) {
+        for (int dy = -cells_radius; dy <= cells_radius; dy++) {
+            int x = center_cell.x + dx;
+            int y = center_cell.y + dy;
+            
+            if (!is_valid_cell(x, y)) continue;
+            
+            grid[x][y].walkable = walkable;
+        }
+    }
+    
+    // Invalidate the current flow field
+    field_computed = false;
 }
 
 void FlowFieldManager::compute_flow_field(const Vector3 &target_world_pos) {

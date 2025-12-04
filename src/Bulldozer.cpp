@@ -1,6 +1,6 @@
 /**
  * Bulldozer.cpp
- * Construction vehicle implementation.
+ * Construction vehicle implementation with placement validation.
  */
 
 #include "Bulldozer.h"
@@ -13,6 +13,11 @@
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
+#include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -168,6 +173,12 @@ void Bulldozer::cancel_placing() {
 void Bulldozer::confirm_build_location(const Vector3 &location) {
     if (!is_placing_building) return;
     
+    // Check if placement is valid
+    if (!check_placement_valid(location, current_ghost_size)) {
+        UtilityFunctions::print("Bulldozer: Cannot place building here - location blocked!");
+        return;
+    }
+    
     build_location = location;
     current_build_type = placing_type;
     
@@ -183,7 +194,17 @@ void Bulldozer::confirm_build_location(const Vector3 &location) {
 
 void Bulldozer::update_ghost_position(const Vector3 &position) {
     if (ghost_building) {
-        ghost_building->set_global_position(position);
+        // Snap ghost to terrain height
+        Vector3 snapped_pos = position;
+        Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+        if (terrain_node) {
+            Variant height_result = terrain_node->call("get_height_at", position.x, position.z);
+            if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+                snapped_pos.y = (float)height_result;
+            }
+        }
+        ghost_building->set_global_position(snapped_pos);
+        update_ghost_validity();
     }
 }
 
@@ -287,7 +308,7 @@ void Bulldozer::create_ghost_building(BuildingType type) {
     ghost_building = memnew(Node3D);
     get_tree()->get_root()->add_child(ghost_building);
     
-    MeshInstance3D *ghost_mesh = memnew(MeshInstance3D);
+    ghost_mesh = memnew(MeshInstance3D);
     ghost_building->add_child(ghost_mesh);
     
     Ref<BoxMesh> mesh;
@@ -304,23 +325,28 @@ void Bulldozer::create_ghost_building(BuildingType type) {
         height = 3.0f;
     }
     
+    current_ghost_size = size;
+    
     mesh->set_size(Vector3(size, height, size));
     ghost_mesh->set_mesh(mesh);
     ghost_mesh->set_position(Vector3(0, height / 2.0f, 0));
     
-    // Semi-transparent green material
+    // Semi-transparent green material (valid placement)
     Ref<StandardMaterial3D> mat;
     mat.instantiate();
     mat->set_albedo(Color(0.2f, 0.8f, 0.2f, 0.4f));
     mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
     mat->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
     ghost_mesh->set_surface_override_material(0, mat);
+    
+    is_placement_valid = true;
 }
 
 void Bulldozer::remove_ghost_building() {
     if (ghost_building) {
         ghost_building->queue_free();
         ghost_building = nullptr;
+        ghost_mesh = nullptr;
     }
 }
 
@@ -375,7 +401,50 @@ Building* Bulldozer::spawn_building(BuildingType type, const Vector3 &position) 
     
     UtilityFunctions::print("Building spawned at Y=", spawn_pos.y);
     
+    // Notify the FlowFieldManager that a building was placed
+    building->notify_flow_field_of_placement();
+    
     return building;
+}
+
+void Bulldozer::update_ghost_validity() {
+    if (!ghost_building || !ghost_mesh) return;
+    
+    Vector3 pos = ghost_building->get_global_position();
+    bool valid = check_placement_valid(pos, current_ghost_size);
+    
+    if (valid != is_placement_valid) {
+        is_placement_valid = valid;
+        
+        Ref<StandardMaterial3D> mat = ghost_mesh->get_surface_override_material(0);
+        if (mat.is_null()) {
+            mat.instantiate();
+            ghost_mesh->set_surface_override_material(0, mat);
+        }
+        
+        mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+        mat->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+        
+        if (valid) {
+            // Green for valid placement
+            mat->set_albedo(Color(0.2f, 0.8f, 0.2f, 0.5f));
+            mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+            mat->set_emission(Color(0.1f, 0.4f, 0.1f));
+            mat->set_emission_energy_multiplier(0.3f);
+        } else {
+            // Red for invalid placement
+            mat->set_albedo(Color(0.8f, 0.2f, 0.2f, 0.5f));
+            mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+            mat->set_emission(Color(0.4f, 0.1f, 0.1f));
+            mat->set_emission_energy_multiplier(0.6f);
+        }
+    }
+}
+
+bool Bulldozer::check_placement_valid(const Vector3 &position, float size) {
+    // Use the static method from Building class for consistency
+    uint32_t check_mask = 0b1110; // Units(2), Buildings(4), Vehicles(8)
+    return Building::is_position_valid_for_building(this, position, size, check_mask);
 }
 
 } // namespace rts

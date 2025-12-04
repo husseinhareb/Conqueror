@@ -26,6 +26,9 @@ void TerrainGenerator::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_height_at", "x", "z"), &TerrainGenerator::get_height_at);
     ClassDB::bind_method(D_METHOD("is_water_at", "x", "z"), &TerrainGenerator::is_water_at);
     ClassDB::bind_method(D_METHOD("is_buildable_at", "x", "z"), &TerrainGenerator::is_buildable_at);
+    ClassDB::bind_method(D_METHOD("is_within_bounds", "x", "z"), &TerrainGenerator::is_within_bounds);
+    ClassDB::bind_method(D_METHOD("get_world_size"), &TerrainGenerator::get_world_size);
+    ClassDB::bind_method(D_METHOD("get_world_center"), &TerrainGenerator::get_world_center);
     
     // Properties
     ClassDB::bind_method(D_METHOD("set_map_size", "size"), &TerrainGenerator::set_map_size);
@@ -333,16 +336,21 @@ void TerrainGenerator::smooth_terrain(int iterations) {
 
 void TerrainGenerator::generate_normalmap() {
     int size = config.map_size;
+    float half_world = (size * config.tile_size) * 0.5f;
     
     normalmap_image = Image::create(size, size, false, Image::FORMAT_RGB8);
     
     for (int z = 0; z < size; z++) {
         for (int x = 0; x < size; x++) {
-            // Get neighboring heights
-            float hL = get_height_at((x - 1) * config.tile_size, z * config.tile_size);
-            float hR = get_height_at((x + 1) * config.tile_size, z * config.tile_size);
-            float hD = get_height_at(x * config.tile_size, (z - 1) * config.tile_size);
-            float hU = get_height_at(x * config.tile_size, (z + 1) * config.tile_size);
+            // Convert pixel to world coordinates (centered at origin)
+            float wx = x * config.tile_size - half_world;
+            float wz = z * config.tile_size - half_world;
+            
+            // Get neighboring heights using world coordinates
+            float hL = get_height_at(wx - config.tile_size, wz);
+            float hR = get_height_at(wx + config.tile_size, wz);
+            float hD = get_height_at(wx, wz - config.tile_size);
+            float hU = get_height_at(wx, wz + config.tile_size);
             
             // Calculate normal
             Vector3 normal = Vector3(hL - hR, 2.0f * config.tile_size, hD - hU).normalized();
@@ -359,13 +367,17 @@ void TerrainGenerator::generate_normalmap() {
 
 void TerrainGenerator::generate_splatmap() {
     int size = config.map_size;
+    float half_world = (size * config.tile_size) * 0.5f;
     
     splatmap_image = Image::create(size, size, false, Image::FORMAT_RGBA8);
     
     for (int z = 0; z < size; z++) {
         for (int x = 0; x < size; x++) {
             float height = heightmap[z * size + x] * config.max_height;
-            Vector3 normal = get_normal_at(x * config.tile_size, z * config.tile_size);
+            // Convert pixel to world coordinates
+            float wx = x * config.tile_size - half_world;
+            float wz = z * config.tile_size - half_world;
+            Vector3 normal = get_normal_at(wx, wz);
             float slope = 1.0f - normal.y; // 0 = flat, 1 = vertical
             
             // RGBA channels: R=grass, G=dirt, B=rock, A=sand
@@ -629,6 +641,9 @@ bool TerrainGenerator::is_water_at(float x, float z) const {
 }
 
 bool TerrainGenerator::is_buildable_at(float x, float z) const {
+    // Check bounds first
+    if (!is_within_bounds(x, z)) return false;
+    
     float height = get_height_at(x, z);
     
     // Not buildable in water
@@ -642,6 +657,11 @@ bool TerrainGenerator::is_buildable_at(float x, float z) const {
     if (slope > 0.3f) return false;
     
     return true;
+}
+
+bool TerrainGenerator::is_within_bounds(float x, float z) const {
+    float half_world = (config.map_size * config.tile_size) * 0.5f;
+    return (x >= -half_world && x <= half_world && z >= -half_world && z <= half_world);
 }
 
 // Setters and getters

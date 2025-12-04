@@ -2,6 +2,7 @@
  * Vehicle.h
  * RTS vehicle class - movable units that can perform special actions.
  * Base class for Bulldozer, tanks, etc.
+ * Includes collision avoidance for buildings, units, and other vehicles.
  */
 
 #ifndef VEHICLE_H
@@ -24,6 +25,20 @@ protected:
     int max_health = 200;
     float move_speed = 4.0f;
     float turn_speed = 3.0f;
+    
+    // Collision avoidance settings
+    float avoidance_radius = 6.0f;        // How far ahead to look for obstacles
+    float avoidance_strength = 10.0f;     // How strongly to avoid obstacles
+    float separation_radius = 3.0f;       // Minimum distance from other vehicles
+    float separation_strength = 6.0f;     // How strongly to separate
+    float wall_follow_distance = 3.0f;    // Distance to maintain when following walls
+    uint32_t obstacle_mask = 0b0100;      // Layer 4: Buildings only (for steering)
+    
+    // Pathfinding state
+    bool is_avoiding = false;
+    float avoid_direction = 0.0f;
+    godot::Vector3 last_position;
+    float stuck_timer = 0.0f;
     
     // State
     bool is_selected = false;
@@ -64,6 +79,15 @@ public:
     void move_to(const godot::Vector3 &position);
     void stop_moving();
     bool get_is_moving() const;
+    
+    // Collision avoidance
+    godot::Vector3 calculate_avoidance_force();
+    godot::Vector3 calculate_separation_force();
+    godot::Vector3 find_clear_direction(const godot::Vector3 &preferred_dir);
+    float raycast_distance(const godot::Vector3 &direction, float max_distance);
+    bool check_path_blocked(const godot::Vector3 &direction, float distance);
+    void update_stuck_detection(double delta);
+    void snap_to_terrain();
     
     // Selection
     void set_selected(bool selected);

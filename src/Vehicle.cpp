@@ -1,17 +1,26 @@
 /**
  * Vehicle.cpp
  * RTS vehicle implementation - movable units with special actions.
+ * Includes collision avoidance for buildings, units, and other vehicles.
  */
 
 #include "Vehicle.h"
 #include "FloorSnapper.h"
 
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -77,10 +86,12 @@ void Vehicle::_ready() {
     // Set collision layer to 8 (vehicles)
     // Collision layers: 1=Ground, 2=Units, 4=Buildings, 8=Vehicles
     set_collision_layer(8);
-    // Only collide with ground (1), not with units/buildings/other vehicles
-    set_collision_mask(1);
+    // Collide with ground (1), buildings (4), units (2), and other vehicles (8)
+    // Physical collision prevents passing through any object
+    set_collision_mask(1 | 2 | 4 | 8);
     
     target_position = get_global_position();
+    last_position = get_global_position();
     
     if (!model_path.is_empty()) {
         load_model();
@@ -115,6 +126,7 @@ void Vehicle::_physics_process(double delta) {
     }
     
     if (!is_moving) {
+        is_avoiding = false;
         return;
     }
     
@@ -124,16 +136,47 @@ void Vehicle::_physics_process(double delta) {
     
     float distance = direction.length();
     
-    if (distance < 0.5f) {
+    if (distance < 1.0f) {
         is_moving = false;
+        is_avoiding = false;
         current_velocity = Vector3();
         return;
     }
     
+    // Update stuck detection
+    update_stuck_detection(delta);
+    
     direction = direction.normalized();
     
-    // Rotate towards target
-    float target_angle = atan2(direction.x, direction.z);
+    // Check if path ahead is blocked
+    float forward_distance = raycast_distance(direction, avoidance_radius);
+    bool path_blocked = forward_distance < avoidance_radius * 0.7f;
+    
+    Vector3 move_direction = direction;
+    
+    if (path_blocked) {
+        move_direction = find_clear_direction(direction);
+        is_avoiding = true;
+    } else if (is_avoiding) {
+        // Check if direct path to target is now clear
+        float direct_distance = raycast_distance(direction, avoidance_radius);
+        if (direct_distance >= avoidance_radius * 0.9f) {
+            is_avoiding = false;
+        } else {
+            move_direction = find_clear_direction(direction);
+        }
+    }
+    
+    // Add separation from other vehicles/units
+    Vector3 separation = calculate_separation_force();
+    move_direction = (move_direction + separation * 0.2f).normalized();
+    
+    Vector3 desired_direction = move_direction * move_speed;
+    desired_direction.y = 0;
+    
+    // Calculate target angle from desired direction
+    Vector3 move_dir = desired_direction.normalized();
+    float target_angle = atan2(move_dir.x, move_dir.z);
     float current_angle = get_rotation().y;
     float angle_diff = target_angle - current_angle;
     
@@ -148,10 +191,19 @@ void Vehicle::_physics_process(double delta) {
         set_rotation(Vector3(0, current_angle + (angle_diff > 0 ? rotation_step : -rotation_step), 0));
     }
     
-    // Move forward
-    current_velocity = direction * move_speed;
+    // Move in the direction we're facing (or desired direction if close enough)
+    if (abs(angle_diff) < Math_PI / 4) { // Only move if roughly facing the right direction
+        current_velocity = desired_direction;
+    } else {
+        // Slow down while turning
+        current_velocity = desired_direction * 0.3f;
+    }
+    
     set_velocity(current_velocity);
     move_and_slide();
+    
+    // Snap to terrain height
+    snap_to_terrain();
 }
 
 void Vehicle::create_vehicle_mesh() {
@@ -439,6 +491,196 @@ void Vehicle::set_model_scale(float scale) {
 
 float Vehicle::get_model_scale() const {
     return model_scale;
+}
+
+Vector3 Vehicle::calculate_avoidance_force() {
+    // Simple backup force-based avoidance
+    Vector3 avoidance_force = Vector3(0, 0, 0);
+    
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return avoidance_force;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return avoidance_force;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 forward = current_velocity.normalized();
+    if (forward.length_squared() < 0.01f) {
+        forward = -get_transform().basis.get_column(2);
+    }
+    
+    float ahead_dist = raycast_distance(forward, wall_follow_distance);
+    if (ahead_dist < wall_follow_distance) {
+        float strength = (1.0f - ahead_dist / wall_follow_distance) * avoidance_strength;
+        avoidance_force = -forward * strength;
+    }
+    
+    return avoidance_force;
+}
+
+Vector3 Vehicle::calculate_separation_force() {
+    Vector3 separation_force = Vector3(0, 0, 0);
+    
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return separation_force;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return separation_force;
+    
+    Vector3 current_pos = get_global_position();
+    
+    Ref<SphereShape3D> sphere;
+    sphere.instantiate();
+    sphere->set_radius(separation_radius);
+    
+    Ref<PhysicsShapeQueryParameters3D> shape_query;
+    shape_query.instantiate();
+    shape_query->set_shape(sphere);
+    shape_query->set_transform(Transform3D(Basis(), current_pos + Vector3(0, 0.5f, 0)));
+    shape_query->set_collision_mask(2 | 8); // Units and Vehicles
+    shape_query->set_exclude(TypedArray<RID>::make(get_rid()));
+    
+    TypedArray<Dictionary> results = space_state->intersect_shape(shape_query, 10);
+    
+    for (int i = 0; i < results.size(); i++) {
+        Dictionary result = results[i];
+        Object *collider_obj = Object::cast_to<Object>(result["collider"]);
+        if (!collider_obj) continue;
+        
+        Node3D *other = Object::cast_to<Node3D>(collider_obj);
+        if (!other || other == this) continue;
+        
+        Vector3 other_pos = other->get_global_position();
+        Vector3 away = current_pos - other_pos;
+        away.y = 0;
+        
+        float dist = away.length();
+        if (dist > 0.01f && dist < separation_radius) {
+            float strength = (1.0f - dist / separation_radius) * separation_strength;
+            separation_force += away.normalized() * strength;
+        }
+    }
+    
+    return separation_force;
+}
+
+Vector3 Vehicle::find_clear_direction(const Vector3 &preferred_dir) {
+    const int num_directions = 16;
+    float best_score = -1000.0f;
+    Vector3 best_direction = preferred_dir;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 to_target = (target_position - current_pos).normalized();
+    
+    for (int i = 0; i < num_directions; i++) {
+        float angle = (i * 2.0f * Math_PI) / num_directions;
+        Vector3 dir = Vector3(Math::sin(angle), 0, Math::cos(angle));
+        
+        float clearance = raycast_distance(dir, avoidance_radius);
+        
+        float clearance_score = clearance / avoidance_radius;
+        float target_alignment = dir.dot(to_target);
+        float target_score = (target_alignment + 1.0f) * 0.5f;
+        float momentum_alignment = dir.dot(preferred_dir);
+        float momentum_score = (momentum_alignment + 1.0f) * 0.25f;
+        
+        float score = clearance_score * 2.0f + target_score * 1.5f + momentum_score;
+        
+        if (clearance < 2.0f) {
+            score -= 5.0f;
+        }
+        
+        if (score > best_score) {
+            best_score = score;
+            best_direction = dir;
+        }
+    }
+    
+    if (best_direction.cross(preferred_dir).y > 0) {
+        avoid_direction = 1.0f;
+    } else {
+        avoid_direction = -1.0f;
+    }
+    
+    return best_direction;
+}
+
+float Vehicle::raycast_distance(const Vector3 &direction, float max_distance) {
+    Ref<World3D> world = get_viewport()->get_world_3d();
+    if (world.is_null()) return max_distance;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return max_distance;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 from = current_pos + Vector3(0, 0.5f, 0);
+    Vector3 to = from + direction.normalized() * max_distance;
+    
+    Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(from, to);
+    query->set_collision_mask(obstacle_mask);
+    query->set_exclude(TypedArray<RID>::make(get_rid()));
+    
+    Dictionary result = space_state->intersect_ray(query);
+    
+    if (result.is_empty()) {
+        return max_distance;
+    }
+    
+    Vector3 hit_pos = result["position"];
+    return (hit_pos - from).length();
+}
+
+bool Vehicle::check_path_blocked(const Vector3 &direction, float distance) {
+    return raycast_distance(direction, distance) < distance;
+}
+
+void Vehicle::update_stuck_detection(double delta) {
+    Vector3 current_pos = get_global_position();
+    float moved_distance = (current_pos - last_position).length();
+    
+    if (moved_distance < 0.03f * delta) {
+        stuck_timer += delta;
+        if (stuck_timer > 1.5f) {
+            avoid_direction = -avoid_direction;
+            stuck_timer = 0.0f;
+        }
+    } else {
+        stuck_timer = 0.0f;
+    }
+    
+    last_position = current_pos;
+}
+
+void Vehicle::snap_to_terrain() {
+    // Find terrain generator and snap to its height
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (!terrain_node) return;
+    
+    Vector3 pos = get_global_position();
+    
+    // Check if within bounds
+    Variant bounds_result = terrain_node->call("is_within_bounds", pos.x, pos.z);
+    if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
+        // Out of bounds - push back toward center
+        float world_size = 0.0f;
+        Variant size_result = terrain_node->call("get_world_size");
+        if (size_result.get_type() == Variant::FLOAT) {
+            world_size = (float)size_result * 0.5f - 5.0f;
+        } else {
+            world_size = 100.0f;
+        }
+        
+        pos.x = Math::clamp(pos.x, -world_size, world_size);
+        pos.z = Math::clamp(pos.z, -world_size, world_size);
+    }
+    
+    // Get terrain height at current position
+    Variant height_result = terrain_node->call("get_height_at", pos.x, pos.z);
+    if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+        float terrain_y = (float)height_result;
+        pos.y = terrain_y;
+        set_global_position(pos);
+    }
 }
 
 } // namespace rts

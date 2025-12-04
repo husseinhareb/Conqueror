@@ -40,10 +40,17 @@ private:
     bool field_computed = false;
     godot::Vector3 current_target;
     
+    // Terrain reference
+    godot::Node *terrain_generator = nullptr;
+    
     // Terrain sampling
     float terrain_sample_height = 100.0f;
     uint32_t ground_collision_layer = 1;
-    uint32_t obstacle_collision_layer = 4;
+    uint32_t obstacle_collision_layer = 0b1110; // Units(2), Buildings(4), Vehicles(8)
+    
+    // Terrain walkability thresholds
+    float max_walkable_slope = 0.7f;      // Maximum slope angle (0-1, 1 = vertical)
+    float max_height_difference = 2.0f;    // Maximum height diff between adjacent cells
     
     // Debug
     bool debug_draw = false;
@@ -61,6 +68,8 @@ public:
     // Grid management
     void initialize_grid();
     void update_walkability();
+    void refresh_walkability_area(const godot::Vector3 &center, float radius);
+    void mark_building_area(const godot::Vector3 &position, float size, bool walkable);
     
     // Flow field computation
     void compute_flow_field(const godot::Vector3 &target_world_pos);

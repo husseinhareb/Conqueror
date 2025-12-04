@@ -1,9 +1,10 @@
 /**
  * Building.cpp
- * RTS building implementation - static structures.
+ * RTS building implementation - static structures with placement validation.
  */
 
 #include "Building.h"
+#include "FlowFieldManager.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/box_mesh.hpp>
@@ -11,6 +12,12 @@
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -94,6 +101,23 @@ void Building::_ready() {
     }
     
     setup_collision();
+    
+    // Snap building to terrain height
+    snap_to_terrain();
+}
+
+void Building::snap_to_terrain() {
+    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (terrain_node) {
+        Vector3 pos = get_global_position();
+        Variant height_result = terrain_node->call("get_height_at", pos.x, pos.z);
+        if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
+            float terrain_y = (float)height_result;
+            pos.y = terrain_y;
+            set_global_position(pos);
+            UtilityFunctions::print("Building snapped to terrain at Y=", terrain_y);
+        }
+    }
 }
 
 void Building::_process(double delta) {
@@ -450,6 +474,180 @@ void Building::set_model_scale(float scale) {
 
 float Building::get_model_scale() const {
     return model_scale;
+}
+
+bool Building::can_place_at(const Vector3 &position) {
+    return is_position_valid_for_building(this, position, building_size, placement_check_mask);
+}
+
+bool Building::check_placement_valid() {
+    is_placement_valid = can_place_at(get_global_position());
+    if (is_preview_mode) {
+        update_preview_visual();
+    }
+    return is_placement_valid;
+}
+
+void Building::set_preview_mode(bool preview) {
+    is_preview_mode = preview;
+    if (preview) {
+        // In preview mode, disable collision so it doesn't interfere with placement checks
+        set_collision_layer(0);
+        set_collision_mask(0);
+        update_preview_visual();
+    } else {
+        // Restore normal collision
+        set_collision_layer(4); // Buildings layer
+        set_collision_mask(0);
+    }
+}
+
+bool Building::get_preview_mode() const {
+    return is_preview_mode;
+}
+
+void Building::update_preview_visual() {
+    // Update visual based on placement validity
+    if (model_instance) {
+        apply_selection_to_model(model_instance, false, false);
+        // Override with placement color
+        apply_placement_color_to_model(model_instance, is_placement_valid);
+        return;
+    }
+    
+    if (!mesh_instance) return;
+    
+    Ref<StandardMaterial3D> mat = mesh_instance->get_surface_override_material(0);
+    if (mat.is_null()) {
+        mat.instantiate();
+        mesh_instance->set_surface_override_material(0, mat);
+    }
+    
+    mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+    
+    if (is_placement_valid) {
+        // Green for valid placement
+        mat->set_albedo(Color(0.2f, 0.8f, 0.2f, 0.6f));
+        mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+        mat->set_emission(Color(0.1f, 0.4f, 0.1f));
+        mat->set_emission_energy_multiplier(0.5f);
+    } else {
+        // Red for invalid placement
+        mat->set_albedo(Color(0.8f, 0.2f, 0.2f, 0.6f));
+        mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+        mat->set_emission(Color(0.4f, 0.1f, 0.1f));
+        mat->set_emission_energy_multiplier(0.8f);
+    }
+}
+
+void Building::apply_placement_color_to_model(Node *node, bool valid) {
+    if (!node) return;
+    
+    MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(node);
+    if (mesh) {
+        Ref<Mesh> mesh_res = mesh->get_mesh();
+        if (mesh_res.is_valid()) {
+            int surface_count = mesh_res->get_surface_count();
+            for (int s = 0; s < surface_count; s++) {
+                Ref<StandardMaterial3D> mat = mesh->get_surface_override_material(s);
+                if (mat.is_null()) {
+                    mat.instantiate();
+                    mesh->set_surface_override_material(s, mat);
+                }
+                
+                mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+                
+                if (valid) {
+                    mat->set_albedo(Color(0.2f, 0.8f, 0.2f, 0.6f));
+                    mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                    mat->set_emission(Color(0.1f, 0.4f, 0.1f));
+                    mat->set_emission_energy_multiplier(0.5f);
+                } else {
+                    mat->set_albedo(Color(0.8f, 0.2f, 0.2f, 0.6f));
+                    mat->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                    mat->set_emission(Color(0.4f, 0.1f, 0.1f));
+                    mat->set_emission_energy_multiplier(0.8f);
+                }
+            }
+        }
+    }
+    
+    for (int i = 0; i < node->get_child_count(); i++) {
+        apply_placement_color_to_model(node->get_child(i), valid);
+    }
+}
+
+bool Building::is_position_valid_for_building(Node *context, const Vector3 &position, float size, uint32_t check_mask) {
+    if (!context) return false;
+    
+    // First check: Is the position on valid terrain?
+    Node *terrain_node = context->get_tree()->get_root()->find_child("TerrainGenerator", true, false);
+    if (terrain_node) {
+        // Check if within map bounds
+        Variant bounds_result = terrain_node->call("is_within_bounds", position.x, position.z);
+        if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
+            return false; // Outside terrain bounds
+        }
+        
+        // Check buildability at all corners of the building
+        float half_size = size * 0.5f;
+        float corners[4][2] = {
+            {position.x - half_size, position.z - half_size},
+            {position.x + half_size, position.z - half_size},
+            {position.x - half_size, position.z + half_size},
+            {position.x + half_size, position.z + half_size}
+        };
+        
+        for (int i = 0; i < 4; i++) {
+            Variant buildable_result = terrain_node->call("is_buildable_at", corners[i][0], corners[i][1]);
+            if (buildable_result.get_type() == Variant::BOOL && !(bool)buildable_result) {
+                return false; // Can't build here (water, steep slope, etc.)
+            }
+        }
+        
+        // Also check center
+        Variant center_buildable = terrain_node->call("is_buildable_at", position.x, position.z);
+        if (center_buildable.get_type() == Variant::BOOL && !(bool)center_buildable) {
+            return false;
+        }
+    }
+    
+    // Second check: Overlapping with other objects
+    Viewport *viewport = context->get_viewport();
+    if (!viewport) return false;
+    
+    Ref<World3D> world = viewport->get_world_3d();
+    if (world.is_null()) return false;
+    
+    PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
+    if (!space_state) return false;
+    
+    // Use a box shape to check for overlapping objects
+    Ref<BoxShape3D> check_shape;
+    check_shape.instantiate();
+    // Slightly smaller than the building to allow tight placement
+    check_shape->set_size(Vector3(size * 0.9f, 2.0f, size * 0.9f));
+    
+    Ref<PhysicsShapeQueryParameters3D> shape_query;
+    shape_query.instantiate();
+    shape_query->set_shape(check_shape);
+    shape_query->set_transform(Transform3D(Basis(), position + Vector3(0, 1.0f, 0)));
+    shape_query->set_collision_mask(check_mask);
+    
+    TypedArray<Dictionary> results = space_state->intersect_shape(shape_query, 1);
+    
+    // If any objects found, placement is invalid
+    return results.size() == 0;
+}
+
+void Building::notify_flow_field_of_placement() {
+    // Find the FlowFieldManager and update walkability
+    Node *flow_field = get_tree()->get_root()->find_child("FlowFieldManager", true, false);
+    if (flow_field) {
+        // Mark this building's area as unwalkable
+        flow_field->call("mark_building_area", get_global_position(), building_size, false);
+        UtilityFunctions::print("Building: Notified FlowFieldManager of placement");
+    }
 }
 
 } // namespace rts

@@ -31,8 +31,11 @@ private:
     
     // Ghost preview
     godot::Node3D *ghost_building = nullptr;
+    godot::MeshInstance3D *ghost_mesh = nullptr;
     bool is_placing_building = false;
+    bool is_placement_valid = false;
     BuildingType placing_type = BuildingType::NONE;
+    float current_ghost_size = 4.0f;
     
     // Building costs (for future resource system)
     int power_plant_cost = 500;
@@ -85,7 +88,9 @@ public:
 private:
     void create_ghost_building(BuildingType type);
     void remove_ghost_building();
+    void update_ghost_validity();
     Building* spawn_building(BuildingType type, const godot::Vector3 &position);
+    bool check_placement_valid(const godot::Vector3 &position, float size);
 };
 
 } // namespace rts

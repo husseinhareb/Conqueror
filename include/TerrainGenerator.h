@@ -140,6 +140,7 @@ public:
     godot::Vector3 get_normal_at(float x, float z) const;
     bool is_water_at(float x, float z) const;
     bool is_buildable_at(float x, float z) const;
+    bool is_within_bounds(float x, float z) const;
     
     // Configuration setters/getters
     void set_map_size(int size);
