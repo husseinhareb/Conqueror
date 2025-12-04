@@ -14,6 +14,7 @@
 #include <godot_cpp/classes/height_map_shape3d.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -70,6 +71,14 @@ struct TerrainConfig {
     float lake_size = 6.0f;          // Average lake radius (smaller)
     float lake_max_size = 10.0f;     // Maximum lake size
     
+    // Tree settings
+    int tree_count = 2000;           // Number of trees to spawn
+    float tree_min_height = 2.0f;    // Minimum terrain height for trees
+    float tree_max_height = 12.0f;   // Maximum terrain height for trees
+    float tree_max_slope = 0.4f;     // Maximum slope for tree placement
+    float tree_min_spacing = 5.0f;   // Minimum distance between trees
+    float tree_center_clear = 50.0f; // Keep center clear for player base
+    
     // Random seed
     int seed = 12345;
 };
@@ -95,6 +104,12 @@ private:
     godot::StaticBody3D *terrain_body = nullptr;
     godot::CollisionShape3D *terrain_collision = nullptr;
     godot::MeshInstance3D *water_mesh = nullptr;
+    godot::Node3D *trees_container = nullptr;
+    
+    // Tree meshes (shared across all trees)
+    godot::Ref<godot::ArrayMesh> tree_mesh;
+    godot::Ref<godot::StandardMaterial3D> tree_trunk_material;
+    godot::Ref<godot::StandardMaterial3D> tree_leaves_material;
     
     // Textures
     godot::Ref<godot::ImageTexture> heightmap_texture;
@@ -120,6 +135,9 @@ private:
     void create_terrain_collision();
     void create_water_plane();
     void apply_terrain_material();
+    void generate_trees();
+    void create_tree_mesh();
+    bool is_valid_tree_position(float x, float z) const;
 
 protected:
     static void _bind_methods();

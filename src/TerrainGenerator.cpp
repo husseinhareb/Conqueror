@@ -10,8 +10,11 @@
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/classes/plane_mesh.hpp>
+#include <godot_cpp/classes/cylinder_mesh.hpp>
+#include <godot_cpp/classes/capsule_mesh.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cmath>
+#include <vector>
 
 using namespace godot;
 
@@ -172,6 +175,9 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     create_water_plane();
     apply_terrain_material();
     
+    // Generate trees
+    generate_trees();
+    
     UtilityFunctions::print("TerrainGenerator: Terrain generation complete");
 }
 
@@ -187,6 +193,10 @@ void TerrainGenerator::clear_terrain() {
     if (water_mesh) {
         water_mesh->queue_free();
         water_mesh = nullptr;
+    }
+    if (trees_container) {
+        trees_container->queue_free();
+        trees_container = nullptr;
     }
     terrain_collision = nullptr;
     heightmap.clear();
@@ -737,6 +747,136 @@ float TerrainGenerator::get_world_size() const {
 
 Vector3 TerrainGenerator::get_world_center() const {
     return Vector3(0, 0, 0);
+}
+
+void TerrainGenerator::create_tree_mesh() {
+    // Create shared materials for all trees
+    tree_trunk_material.instantiate();
+    tree_trunk_material->set_albedo(Color(0.4f, 0.25f, 0.15f)); // Brown trunk
+    tree_trunk_material->set_roughness(0.9f);
+    
+    tree_leaves_material.instantiate();
+    tree_leaves_material->set_albedo(Color(0.15f, 0.45f, 0.12f)); // Dark green leaves
+    tree_leaves_material->set_roughness(0.8f);
+}
+
+bool TerrainGenerator::is_valid_tree_position(float x, float z) const {
+    // Check if within bounds
+    if (!is_within_bounds(x, z)) return false;
+    
+    // Check height - trees don't grow in water or on peaks
+    float height = get_height_at(x, z);
+    if (height < config.tree_min_height || height > config.tree_max_height) return false;
+    
+    // Check slope - trees don't grow on steep terrain
+    Vector3 normal = get_normal_at(x, z);
+    float slope = 1.0f - normal.y;
+    if (slope > config.tree_max_slope) return false;
+    
+    // Keep center area clear for player base
+    float dist_from_center = sqrt(x * x + z * z);
+    if (dist_from_center < config.tree_center_clear) return false;
+    
+    return true;
+}
+
+void TerrainGenerator::generate_trees() {
+    UtilityFunctions::print("TerrainGenerator: Generating trees...");
+    
+    // Create materials
+    create_tree_mesh();
+    
+    // Create container for all trees
+    trees_container = memnew(Node3D);
+    trees_container->set_name("Trees");
+    add_child(trees_container);
+    
+    // Create cylinder mesh for trunk
+    Ref<CylinderMesh> trunk_mesh;
+    trunk_mesh.instantiate();
+    trunk_mesh->set_top_radius(0.15f);
+    trunk_mesh->set_bottom_radius(0.25f);
+    trunk_mesh->set_height(2.0f);
+    trunk_mesh->set_radial_segments(6);
+    
+    // Create cone mesh for leaves (cylinder with top_radius = 0)
+    Ref<CylinderMesh> leaves_mesh;
+    leaves_mesh.instantiate();
+    leaves_mesh->set_top_radius(0.0f);      // Point at top = cone shape
+    leaves_mesh->set_bottom_radius(1.2f);
+    leaves_mesh->set_height(3.0f);
+    leaves_mesh->set_radial_segments(8);
+    
+    float half_world = (config.map_size * config.tile_size) * 0.5f;
+    
+    // Store placed tree positions for spacing check
+    std::vector<Vector2> placed_trees;
+    placed_trees.reserve(config.tree_count);
+    
+    int attempts = 0;
+    int max_attempts = config.tree_count * 10; // Prevent infinite loop
+    int trees_placed = 0;
+    
+    while (trees_placed < config.tree_count && attempts < max_attempts) {
+        attempts++;
+        
+        // Random position using seed
+        int hash = (config.seed + attempts * 16807) % 2147483647;
+        int hash2 = (hash * 48271) % 2147483647;
+        
+        float x = ((float)(hash % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        float z = ((float)(hash2 % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        
+        // Check if valid position
+        if (!is_valid_tree_position(x, z)) continue;
+        
+        // Check spacing from other trees
+        bool too_close = false;
+        Vector2 new_pos(x, z);
+        for (const Vector2 &pos : placed_trees) {
+            if (pos.distance_to(new_pos) < config.tree_min_spacing) {
+                too_close = true;
+                break;
+            }
+        }
+        if (too_close) continue;
+        
+        // Get terrain height at this position
+        float height = get_height_at(x, z);
+        
+        // Random tree size variation
+        int hash3 = (hash2 * 69621) % 2147483647;
+        float scale = 0.7f + ((float)(hash3 % 1000) / 1000.0f) * 0.6f; // 0.7 to 1.3
+        
+        // Random rotation
+        float rotation = ((float)(hash3 % 360));
+        
+        // Create tree node
+        Node3D *tree = memnew(Node3D);
+        tree->set_position(Vector3(x, height, z));
+        tree->set_rotation_degrees(Vector3(0, rotation, 0));
+        tree->set_scale(Vector3(scale, scale, scale));
+        
+        // Add trunk
+        MeshInstance3D *trunk = memnew(MeshInstance3D);
+        trunk->set_mesh(trunk_mesh);
+        trunk->set_position(Vector3(0, 1.0f, 0)); // Offset up by half height
+        trunk->set_surface_override_material(0, tree_trunk_material);
+        tree->add_child(trunk);
+        
+        // Add leaves
+        MeshInstance3D *leaves = memnew(MeshInstance3D);
+        leaves->set_mesh(leaves_mesh);
+        leaves->set_position(Vector3(0, 3.0f, 0)); // On top of trunk
+        leaves->set_surface_override_material(0, tree_leaves_material);
+        tree->add_child(leaves);
+        
+        trees_container->add_child(tree);
+        placed_trees.push_back(new_pos);
+        trees_placed++;
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees");
 }
 
 } // namespace rts
