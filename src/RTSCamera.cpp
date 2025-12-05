@@ -973,6 +973,14 @@ void RTSCamera::update_hover_detection() {
         return;
     }
     
+    // Performance optimization: Only raycast if cursor has moved significantly
+    float cursor_move_threshold = 2.0f;
+    if (last_hover_cursor_position.x >= 0 && 
+        cursor_position.distance_to(last_hover_cursor_position) < cursor_move_threshold) {
+        return; // Cursor hasn't moved enough, skip raycasting
+    }
+    last_hover_cursor_position = cursor_position;
+    
     // Raycast to find what's under cursor (in priority order)
     Bulldozer *new_hovered_bulldozer = raycast_for_bulldozer(cursor_position);
     Unit *new_hovered_unit = nullptr;

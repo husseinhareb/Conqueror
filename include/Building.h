@@ -50,6 +50,9 @@ private:
 
 protected:
     static void _bind_methods();
+    
+    // Flag for subclasses that create their own geometry
+    bool skip_default_mesh = false;
 
 public:
     Building();

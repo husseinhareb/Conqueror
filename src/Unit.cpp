@@ -97,6 +97,26 @@ void Unit::_ready() {
     terrain_height = get_global_position().y;
     last_terrain_height = terrain_height;
     
+    // Cache terrain generator reference for performance
+    SceneTree *tree = get_tree();
+    if (tree) {
+        Node *root = tree->get_root();
+        if (root) {
+            cached_terrain_generator = root->find_child("TerrainGenerator", true, false);
+        }
+    }
+    
+    // Initialize cached physics shapes for separation/avoidance (avoid per-frame allocations)
+    cached_separation_sphere.instantiate();
+    cached_separation_sphere->set_radius(separation_radius);
+    
+    cached_shape_query.instantiate();
+    cached_shape_query->set_shape(cached_separation_sphere);
+    cached_shape_query->set_collision_mask(2 | 8); // Units and vehicles
+    
+    cached_ray_query.instantiate();
+    cached_ray_query->set_collision_mask(obstacle_mask);
+    
     // Set collision layer to 2 (units)
     set_collision_layer(2);
     // Collide with ground (1) and buildings (4) - physical collision prevents passing through
@@ -490,21 +510,15 @@ Vector3 Unit::calculate_separation_force() {
     PhysicsDirectSpaceState3D *space_state = world->get_direct_space_state();
     if (!space_state) return separation_force;
     
+    if (cached_shape_query.is_null()) return separation_force;
+    
     Vector3 current_pos = get_global_position();
     
-    // Use shape query to find nearby units
-    Ref<SphereShape3D> sphere;
-    sphere.instantiate();
-    sphere->set_radius(separation_radius);
+    // Use cached shape query (shapes initialized in _ready)
+    cached_shape_query->set_transform(Transform3D(Basis(), current_pos + Vector3(0, 0.5f, 0)));
+    cached_shape_query->set_exclude(TypedArray<RID>::make(get_rid()));
     
-    Ref<PhysicsShapeQueryParameters3D> shape_query;
-    shape_query.instantiate();
-    shape_query->set_shape(sphere);
-    shape_query->set_transform(Transform3D(Basis(), current_pos + Vector3(0, 0.5f, 0)));
-    shape_query->set_collision_mask(2 | 8); // Units and vehicles
-    shape_query->set_exclude(TypedArray<RID>::make(get_rid()));
-    
-    TypedArray<Dictionary> results = space_state->intersect_shape(shape_query, 10);
+    TypedArray<Dictionary> results = space_state->intersect_shape(cached_shape_query, 10);
     
     for (int i = 0; i < results.size(); i++) {
         Dictionary result = results[i];
@@ -530,7 +544,8 @@ Vector3 Unit::calculate_separation_force() {
 
 Vector3 Unit::find_clear_direction(const Vector3 &preferred_dir) {
     // Context steering: cast rays in multiple directions and find the best open path
-    const int num_directions = 16;
+    // Reduced from 16 to 8 directions for performance
+    const int num_directions = 8;
     float best_score = -1000.0f;
     Vector3 best_direction = preferred_dir;
     
@@ -591,6 +606,8 @@ float Unit::raycast_distance(const Vector3 &direction, float max_distance) {
     Vector3 from = current_pos + Vector3(0, 0.5f, 0);
     Vector3 to = from + direction.normalized() * max_distance;
     
+    // Use cached ray query when possible, but we need to create new for different rays
+    // PhysicsRayQueryParameters3D::create is still needed as rays change per-call
     Ref<PhysicsRayQueryParameters3D> query = PhysicsRayQueryParameters3D::create(from, to);
     query->set_collision_mask(obstacle_mask); // Buildings only for pathfinding
     query->set_exclude(TypedArray<RID>::make(get_rid()));
@@ -628,24 +645,17 @@ void Unit::update_stuck_detection(double delta) {
 }
 
 void Unit::snap_to_terrain() {
-    // Find terrain generator and snap to its height
-    SceneTree *tree = get_tree();
-    if (!tree) return;
-    
-    Node *root = tree->get_root();
-    if (!root) return;
-    
-    Node *terrain_node = root->find_child("TerrainGenerator", true, false);
-    if (!terrain_node) return;
+    // Use cached terrain generator reference (cached in _ready for performance)
+    if (!cached_terrain_generator) return;
     
     Vector3 pos = get_global_position();
     
     // Check if within bounds
-    Variant bounds_result = terrain_node->call("is_within_bounds", pos.x, pos.z);
+    Variant bounds_result = cached_terrain_generator->call("is_within_bounds", pos.x, pos.z);
     if (bounds_result.get_type() == Variant::BOOL && !(bool)bounds_result) {
         // Out of bounds - push back toward center
         float world_size = 0.0f;
-        Variant size_result = terrain_node->call("get_world_size");
+        Variant size_result = cached_terrain_generator->call("get_world_size");
         if (size_result.get_type() == Variant::FLOAT) {
             world_size = (float)size_result * 0.5f - 5.0f; // 5 unit buffer from edge
         } else {
@@ -657,7 +667,7 @@ void Unit::snap_to_terrain() {
     }
     
     // Get terrain height at current position
-    Variant height_result = terrain_node->call("get_height_at", pos.x, pos.z);
+    Variant height_result = cached_terrain_generator->call("get_height_at", pos.x, pos.z);
     if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
         last_terrain_height = terrain_height;
         terrain_height = (float)height_result;

@@ -10,6 +10,9 @@
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/character_body3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
+#include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
+#include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 namespace rts {
@@ -74,6 +77,14 @@ private:
     int max_health = 100;
     int attack_damage = 10;
     float attack_range = 5.0f;
+    
+    // Cached references for performance
+    godot::Node *cached_terrain_generator = nullptr;
+    
+    // Cached physics shapes (avoid per-frame allocations)
+    godot::Ref<godot::SphereShape3D> cached_separation_sphere;
+    godot::Ref<godot::PhysicsShapeQueryParameters3D> cached_shape_query;
+    godot::Ref<godot::PhysicsRayQueryParameters3D> cached_ray_query;
 
 protected:
     static void _bind_methods();

@@ -5,12 +5,14 @@
 
 #include "Bulldozer.h"
 #include "FloorSnapper.h"
+#include "Barracks.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
 #include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/classes/prism_mesh.hpp>
+#include <godot_cpp/classes/capsule_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
@@ -21,6 +23,9 @@
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -108,101 +113,274 @@ void Bulldozer::_physics_process(double delta) {
     }
 }
 
+// Helper to load texture for bulldozer - loads directly from file
+static Ref<ImageTexture> load_bulldozer_texture(const String &path) {
+    // Convert res:// path to absolute path for direct file loading
+    String abs_path = path;
+    if (path.begins_with("res://")) {
+        abs_path = path.replace("res://", "");
+        // Get the project root
+        abs_path = String("res://").path_join(abs_path);
+    }
+    
+    if (!FileAccess::file_exists(path)) {
+        UtilityFunctions::print("Bulldozer: Texture not found: ", path);
+        return Ref<ImageTexture>();
+    }
+    
+    // First try ResourceLoader (for imported textures)
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    if (loader) {
+        Ref<Texture2D> tex = loader->load(path);
+        if (tex.is_valid()) {
+            Ref<ImageTexture> img_tex = tex;
+            if (img_tex.is_valid()) {
+                UtilityFunctions::print("Bulldozer: Loaded texture via ResourceLoader: ", path);
+                return img_tex;
+            }
+            Ref<Image> image = tex->get_image();
+            if (image.is_valid()) {
+                image->generate_mipmaps();
+                UtilityFunctions::print("Bulldozer: Loaded texture image via ResourceLoader: ", path);
+                return ImageTexture::create_from_image(image);
+            }
+        }
+    }
+    
+    // Fallback: Load image directly from file (works for non-imported files)
+    Ref<Image> image = Image::load_from_file(path);
+    if (image.is_valid()) {
+        image->generate_mipmaps();
+        UtilityFunctions::print("Bulldozer: Loaded texture directly from file: ", path);
+        return ImageTexture::create_from_image(image);
+    }
+    
+    UtilityFunctions::print("Bulldozer: Failed to load texture: ", path);
+    return Ref<ImageTexture>();
+}
+
 void Bulldozer::create_vehicle_mesh() {
     // ========================================================================
-    // EXTREMELY DETAILED BULLDOZER - D9 CATERPILLAR STYLE
+    // ULTRA REALISTIC BULLDOZER - CAT D9 STYLE WITH PBR TEXTURES
     // ========================================================================
     
-    // Create root node for all bulldozer parts
     Node3D *bulldozer_root = memnew(Node3D);
     bulldozer_root->set_name("BulldozerModel");
     add_child(bulldozer_root);
     
     // ========================================================================
-    // MATERIALS - Create all materials first
+    // LOAD PBR TEXTURES
+    // ========================================================================
+    String tex_path = "res://assets/textures/vehicles/bulldozer/";
+    
+    // Metal plate textures (for body)
+    Ref<ImageTexture> metal_albedo = load_bulldozer_texture(tex_path + "metal_plate_albedo.jpg");
+    Ref<ImageTexture> metal_normal = load_bulldozer_texture(tex_path + "metal_plate_normal.jpg");
+    Ref<ImageTexture> metal_roughness = load_bulldozer_texture(tex_path + "metal_plate_roughness.jpg");
+    Ref<ImageTexture> metal_metallic = load_bulldozer_texture(tex_path + "metal_plate_metallic.jpg");
+    
+    // Rubber textures (for tracks)
+    Ref<ImageTexture> rubber_albedo = load_bulldozer_texture(tex_path + "rubber_albedo.jpg");
+    Ref<ImageTexture> rubber_normal = load_bulldozer_texture(tex_path + "rubber_normal.jpg");
+    Ref<ImageTexture> rubber_roughness = load_bulldozer_texture(tex_path + "rubber_roughness.jpg");
+    
+    // Rusty/worn metal textures (for blade)
+    Ref<ImageTexture> rusty_albedo = load_bulldozer_texture(tex_path + "rusty_metal_albedo.jpg");
+    Ref<ImageTexture> rusty_normal = load_bulldozer_texture(tex_path + "rusty_metal_normal.jpg");
+    Ref<ImageTexture> rusty_roughness = load_bulldozer_texture(tex_path + "rusty_metal_roughness.jpg");
+    
+    // Yellow paint textures (for body)
+    Ref<ImageTexture> yellow_albedo = load_bulldozer_texture(tex_path + "yellow_paint_albedo.jpg");
+    Ref<ImageTexture> yellow_normal = load_bulldozer_texture(tex_path + "yellow_paint_normal.jpg");
+    Ref<ImageTexture> yellow_roughness = load_bulldozer_texture(tex_path + "yellow_paint_roughness.jpg");
+    
+    // ========================================================================
+    // MATERIALS WITH PBR TEXTURES
     // ========================================================================
     
-    // Main body - Caterpillar Yellow
+    // Caterpillar Yellow body paint with weathering texture
     Ref<StandardMaterial3D> yellow_mat;
     yellow_mat.instantiate();
-    yellow_mat->set_albedo(Color(0.95f, 0.75f, 0.05f));
-    yellow_mat->set_roughness(0.6f);
-    yellow_mat->set_metallic(0.2f);
+    if (yellow_albedo.is_valid()) {
+        yellow_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, yellow_albedo);
+        yellow_mat->set_albedo(Color(1.0f, 0.85f, 0.2f)); // Tint to CAT Yellow
+    } else {
+        yellow_mat->set_albedo(Color(0.92f, 0.72f, 0.08f));
+    }
+    if (yellow_normal.is_valid()) {
+        yellow_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, yellow_normal);
+        yellow_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        yellow_mat->set_normal_scale(0.8f);
+    }
+    if (yellow_roughness.is_valid()) {
+        yellow_mat->set_texture(StandardMaterial3D::TEXTURE_ROUGHNESS, yellow_roughness);
+    } else {
+        yellow_mat->set_roughness(0.55f);
+    }
+    yellow_mat->set_metallic(0.1f);
+    yellow_mat->set_specular(0.4f);
+    yellow_mat->set_uv1_scale(Vector3(3.0f, 3.0f, 1.0f));
     
-    // Darker yellow for panels
+    // Darker yellow for panels/accents
     Ref<StandardMaterial3D> dark_yellow_mat;
     dark_yellow_mat.instantiate();
-    dark_yellow_mat->set_albedo(Color(0.85f, 0.65f, 0.02f));
-    dark_yellow_mat->set_roughness(0.7f);
-    dark_yellow_mat->set_metallic(0.15f);
+    if (yellow_albedo.is_valid()) {
+        dark_yellow_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, yellow_albedo);
+        dark_yellow_mat->set_albedo(Color(0.85f, 0.65f, 0.1f)); // Darker tint
+    } else {
+        dark_yellow_mat->set_albedo(Color(0.78f, 0.58f, 0.05f));
+    }
+    if (yellow_normal.is_valid()) {
+        dark_yellow_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, yellow_normal);
+        dark_yellow_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        dark_yellow_mat->set_normal_scale(1.0f);
+    }
+    dark_yellow_mat->set_roughness(0.65f);
+    dark_yellow_mat->set_metallic(0.08f);
+    dark_yellow_mat->set_uv1_scale(Vector3(4.0f, 4.0f, 1.0f));
     
-    // Black rubber/tracks
-    Ref<StandardMaterial3D> black_mat;
-    black_mat.instantiate();
-    black_mat->set_albedo(Color(0.08f, 0.08f, 0.1f));
-    black_mat->set_roughness(0.9f);
-    black_mat->set_metallic(0.0f);
+    // Rubber track material with texture
+    Ref<StandardMaterial3D> rubber_mat;
+    rubber_mat.instantiate();
+    if (rubber_albedo.is_valid()) {
+        rubber_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, rubber_albedo);
+        rubber_mat->set_albedo(Color(0.4f, 0.4f, 0.45f)); // Lighter tint to show texture
+    } else {
+        rubber_mat->set_albedo(Color(0.12f, 0.12f, 0.14f));
+    }
+    if (rubber_normal.is_valid()) {
+        rubber_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, rubber_normal);
+        rubber_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        rubber_mat->set_normal_scale(1.5f);
+    }
+    if (rubber_roughness.is_valid()) {
+        rubber_mat->set_texture(StandardMaterial3D::TEXTURE_ROUGHNESS, rubber_roughness);
+    } else {
+        rubber_mat->set_roughness(0.92f);
+    }
+    rubber_mat->set_metallic(0.0f);
+    rubber_mat->set_uv1_scale(Vector3(4.0f, 1.0f, 1.0f));
     
-    // Steel/metal
+    // Clean steel/chrome
     Ref<StandardMaterial3D> steel_mat;
     steel_mat.instantiate();
-    steel_mat->set_albedo(Color(0.5f, 0.52f, 0.55f));
-    steel_mat->set_roughness(0.35f);
-    steel_mat->set_metallic(0.85f);
+    if (metal_albedo.is_valid()) {
+        steel_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, metal_albedo);
+        steel_mat->set_albedo(Color(0.7f, 0.72f, 0.75f)); // Steel tint
+    } else {
+        steel_mat->set_albedo(Color(0.55f, 0.57f, 0.6f));
+    }
+    if (metal_normal.is_valid()) {
+        steel_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, metal_normal);
+        steel_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        steel_mat->set_normal_scale(1.0f);
+    }
+    if (metal_metallic.is_valid()) {
+        steel_mat->set_texture(StandardMaterial3D::TEXTURE_METALLIC, metal_metallic);
+    }
+    steel_mat->set_roughness(0.3f);
+    steel_mat->set_metallic(0.9f);
+    steel_mat->set_specular(0.6f);
+    steel_mat->set_uv1_scale(Vector3(2.0f, 2.0f, 1.0f));
     
-    // Dark steel
+    // Dark steel (unpainted metal parts)
     Ref<StandardMaterial3D> dark_steel_mat;
     dark_steel_mat.instantiate();
-    dark_steel_mat->set_albedo(Color(0.25f, 0.26f, 0.28f));
-    dark_steel_mat->set_roughness(0.4f);
-    dark_steel_mat->set_metallic(0.8f);
+    if (metal_albedo.is_valid()) {
+        dark_steel_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, metal_albedo);
+        dark_steel_mat->set_albedo(Color(0.35f, 0.36f, 0.38f));
+    } else {
+        dark_steel_mat->set_albedo(Color(0.28f, 0.29f, 0.31f));
+    }
+    if (metal_normal.is_valid()) {
+        dark_steel_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, metal_normal);
+        dark_steel_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+    }
+    dark_steel_mat->set_roughness(0.45f);
+    dark_steel_mat->set_metallic(0.85f);
+    dark_steel_mat->set_uv1_scale(Vector3(3.0f, 3.0f, 1.0f));
     
-    // Worn steel (blade)
-    Ref<StandardMaterial3D> worn_steel_mat;
-    worn_steel_mat.instantiate();
-    worn_steel_mat->set_albedo(Color(0.4f, 0.38f, 0.35f));
-    worn_steel_mat->set_roughness(0.6f);
-    worn_steel_mat->set_metallic(0.7f);
+    // Worn/rusty blade steel with visible texture
+    Ref<StandardMaterial3D> blade_mat;
+    blade_mat.instantiate();
+    if (rusty_albedo.is_valid()) {
+        blade_mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, rusty_albedo);
+        blade_mat->set_albedo(Color(0.9f, 0.85f, 0.8f)); // Lighter tint to show texture
+    } else {
+        blade_mat->set_albedo(Color(0.42f, 0.4f, 0.38f));
+    }
+    if (rusty_normal.is_valid()) {
+        blade_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, rusty_normal);
+        blade_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        blade_mat->set_normal_scale(2.0f);
+    }
+    if (rusty_roughness.is_valid()) {
+        blade_mat->set_texture(StandardMaterial3D::TEXTURE_ROUGHNESS, rusty_roughness);
+    } else {
+        blade_mat->set_roughness(0.7f);
+    }
+    blade_mat->set_metallic(0.65f);
+    blade_mat->set_uv1_scale(Vector3(2.0f, 1.5f, 1.0f));
     
-    // Exhaust/rusty metal
+    // Exhaust pipe (heat-tinted metal)
     Ref<StandardMaterial3D> exhaust_mat;
     exhaust_mat.instantiate();
-    exhaust_mat->set_albedo(Color(0.3f, 0.25f, 0.2f));
-    exhaust_mat->set_roughness(0.8f);
-    exhaust_mat->set_metallic(0.4f);
+    exhaust_mat->set_albedo(Color(0.32f, 0.28f, 0.25f));
+    if (metal_normal.is_valid()) {
+        exhaust_mat->set_texture(StandardMaterial3D::TEXTURE_NORMAL, metal_normal);
+        exhaust_mat->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+    }
+    exhaust_mat->set_roughness(0.75f);
+    exhaust_mat->set_metallic(0.5f);
     
     // Glass/windows
     Ref<StandardMaterial3D> glass_mat;
     glass_mat.instantiate();
-    glass_mat->set_albedo(Color(0.15f, 0.2f, 0.25f, 0.7f));
+    glass_mat->set_albedo(Color(0.12f, 0.18f, 0.22f, 0.65f));
     glass_mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
-    glass_mat->set_roughness(0.05f);
-    glass_mat->set_metallic(0.3f);
+    glass_mat->set_roughness(0.02f);
+    glass_mat->set_metallic(0.2f);
+    glass_mat->set_specular(0.8f);
     
-    // Red (lights, warning)
+    // Red safety/lights
     Ref<StandardMaterial3D> red_mat;
     red_mat.instantiate();
-    red_mat->set_albedo(Color(0.8f, 0.1f, 0.1f));
-    red_mat->set_roughness(0.4f);
-    red_mat->set_metallic(0.2f);
+    red_mat->set_albedo(Color(0.85f, 0.12f, 0.1f));
+    red_mat->set_roughness(0.35f);
+    red_mat->set_metallic(0.1f);
     
     // Orange warning
     Ref<StandardMaterial3D> orange_mat;
     orange_mat.instantiate();
-    orange_mat->set_albedo(Color(1.0f, 0.5f, 0.0f));
-    orange_mat->set_roughness(0.5f);
-    orange_mat->set_metallic(0.1f);
+    orange_mat->set_albedo(Color(1.0f, 0.55f, 0.0f));
+    orange_mat->set_roughness(0.4f);
     
-    // Light emissive (headlights)
-    Ref<StandardMaterial3D> light_mat;
-    light_mat.instantiate();
-    light_mat->set_albedo(Color(1.0f, 0.98f, 0.9f));
-    light_mat->set_feature(StandardMaterial3D::FEATURE_EMISSION, true);
-    light_mat->set_emission(Color(1.0f, 0.95f, 0.8f));
-    light_mat->set_emission_energy_multiplier(1.5f);
+    // Black matte (vents, grilles)
+    Ref<StandardMaterial3D> black_mat;
+    black_mat.instantiate();
+    black_mat->set_albedo(Color(0.05f, 0.05f, 0.06f));
+    black_mat->set_roughness(0.85f);
+    black_mat->set_metallic(0.1f);
+    
+    // Headlight emissive
+    Ref<StandardMaterial3D> headlight_mat;
+    headlight_mat.instantiate();
+    headlight_mat->set_albedo(Color(1.0f, 0.98f, 0.92f));
+    headlight_mat->set_feature(StandardMaterial3D::FEATURE_EMISSION, true);
+    headlight_mat->set_emission(Color(1.0f, 0.95f, 0.85f));
+    headlight_mat->set_emission_energy_multiplier(2.0f);
+    headlight_mat->set_roughness(0.1f);
+    
+    // Warning beacon emissive
+    Ref<StandardMaterial3D> beacon_mat;
+    beacon_mat.instantiate();
+    beacon_mat->set_albedo(Color(1.0f, 0.6f, 0.0f));
+    beacon_mat->set_feature(StandardMaterial3D::FEATURE_EMISSION, true);
+    beacon_mat->set_emission(Color(1.0f, 0.5f, 0.0f));
+    beacon_mat->set_emission_energy_multiplier(1.5f);
     
     // ========================================================================
-    // TRACK SYSTEM - Left and Right
+    // TRACK SYSTEM - Left and Right (with detailed treads)
     // ========================================================================
     float track_length = 2.8f;
     float track_width = 0.5f;
@@ -212,7 +390,7 @@ void Bulldozer::create_vehicle_mesh() {
     for (int side = -1; side <= 1; side += 2) {
         float x_offset = side * track_offset_x;
         
-        // Main track housing
+        // Main track housing (internal structure)
         MeshInstance3D *track_housing = memnew(MeshInstance3D);
         track_housing->set_name("TrackHousing");
         bulldozer_root->add_child(track_housing);
@@ -224,7 +402,7 @@ void Bulldozer::create_vehicle_mesh() {
         track_housing->set_position(Vector3(x_offset, track_height / 2.0f, 0));
         track_housing->set_surface_override_material(0, dark_steel_mat);
         
-        // Track pad (rubber part)
+        // Rubber track pad with texture
         MeshInstance3D *track_pad = memnew(MeshInstance3D);
         track_pad->set_name("TrackPad");
         bulldozer_root->add_child(track_pad);
@@ -234,10 +412,10 @@ void Bulldozer::create_vehicle_mesh() {
         pad_mesh->set_size(Vector3(track_width + 0.08f, track_height + 0.1f, track_length + 0.05f));
         track_pad->set_mesh(pad_mesh);
         track_pad->set_position(Vector3(x_offset, track_height / 2.0f, 0));
-        track_pad->set_surface_override_material(0, black_mat);
+        track_pad->set_surface_override_material(0, rubber_mat);
         
-        // Track segments (grouser bars)
-        int num_segments = 14;
+        // Track segments (grouser bars) - steel cleats
+        int num_segments = 16;
         for (int i = 0; i < num_segments; i++) {
             MeshInstance3D *segment = memnew(MeshInstance3D);
             segment->set_name("TrackSegment");
@@ -245,10 +423,10 @@ void Bulldozer::create_vehicle_mesh() {
             
             Ref<BoxMesh> seg_mesh;
             seg_mesh.instantiate();
-            seg_mesh->set_size(Vector3(track_width + 0.12f, 0.04f, 0.08f));
+            seg_mesh->set_size(Vector3(track_width + 0.14f, 0.05f, 0.06f));
             segment->set_mesh(seg_mesh);
             float z = -track_length / 2.0f + 0.1f + i * (track_length / num_segments);
-            segment->set_position(Vector3(x_offset, 0.02f, z));
+            segment->set_position(Vector3(x_offset, 0.025f, z));
             segment->set_surface_override_material(0, steel_mat);
         }
         
@@ -268,7 +446,7 @@ void Bulldozer::create_vehicle_mesh() {
         sprocket->set_rotation_degrees(Vector3(0, 0, 90));
         sprocket->set_surface_override_material(0, yellow_mat);
         
-        // Sprocket center
+        // Sprocket center hub
         MeshInstance3D *sprocket_hub = memnew(MeshInstance3D);
         sprocket_hub->set_name("SprocketHub");
         bulldozer_root->add_child(sprocket_hub);
@@ -584,7 +762,7 @@ void Bulldozer::create_vehicle_mesh() {
     blade_mesh->set_size(Vector3(3.0f, 0.9f, 0.15f));
     blade->set_mesh(blade_mesh);
     blade->set_position(Vector3(0, 0.5f, blade_z));
-    blade->set_surface_override_material(0, worn_steel_mat);
+    blade->set_surface_override_material(0, blade_mat);
     
     // Blade cutting edge
     MeshInstance3D *cutting_edge = memnew(MeshInstance3D);
@@ -727,7 +905,7 @@ void Bulldozer::create_vehicle_mesh() {
         tip_mesh->set_size(Vector3(0.1f, 0.15f, 0.08f));
         tip->set_mesh(tip_mesh);
         tip->set_position(Vector3(t * 0.4f, -0.02f, ripper_z - 0.18f));
-        tip->set_surface_override_material(0, worn_steel_mat);
+        tip->set_surface_override_material(0, blade_mat);
     }
     
     // Ripper arms
@@ -759,7 +937,7 @@ void Bulldozer::create_vehicle_mesh() {
         wl_mesh->set_size(Vector3(0.12f, 0.08f, 0.06f));
         work_light->set_mesh(wl_mesh);
         work_light->set_position(Vector3(side * 0.45f, track_height + 1.68f, 0.9f));
-        work_light->set_surface_override_material(0, light_mat);
+        work_light->set_surface_override_material(0, headlight_mat);
     }
     
     // Rear lights
@@ -970,11 +1148,10 @@ void Bulldozer::confirm_build_location(const Vector3 &location) {
 
 void Bulldozer::update_ghost_position(const Vector3 &position) {
     if (ghost_building) {
-        // Snap ghost to terrain height
+        // Snap ghost to terrain height - use cached terrain generator from Vehicle base class
         Vector3 snapped_pos = position;
-        Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
-        if (terrain_node) {
-            Variant height_result = terrain_node->call("get_height_at", position.x, position.z);
+        if (cached_terrain_generator) {
+            Variant height_result = cached_terrain_generator->call("get_height_at", position.x, position.z);
             if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
                 snapped_pos.y = (float)height_result;
             }
@@ -1090,20 +1267,24 @@ void Bulldozer::create_ghost_building(BuildingType type) {
     Ref<BoxMesh> mesh;
     mesh.instantiate();
     
-    float size = 4.0f;
+    float width = 4.0f;
+    float depth = 4.0f;
     float height = 3.0f;
     
     if (type == BuildingType::POWER_PLANT) {
-        size = 8.0f;
+        width = 8.0f;
+        depth = 8.0f;
         height = 6.0f;
     } else if (type == BuildingType::BARRACKS) {
-        size = 6.0f;
-        height = 3.0f;
+        // Match actual barracks dimensions: 24 wide, 16 deep, plus perimeter fence area
+        width = 44.0f;   // BUILDING_WIDTH (24) + perimeter (20)
+        depth = 41.0f;   // BUILDING_DEPTH (16) + perimeter (25)
+        height = 8.5f;   // BUILDING_HEIGHT (6) + ROOF_HEIGHT (2.5)
     }
     
-    current_ghost_size = size;
+    current_ghost_size = Math::max(width, depth);
     
-    mesh->set_size(Vector3(size, height, size));
+    mesh->set_size(Vector3(width, height, depth));
     ghost_mesh->set_mesh(mesh);
     ghost_mesh->set_position(Vector3(0, height / 2.0f, 0));
     
@@ -1127,9 +1308,10 @@ void Bulldozer::remove_ghost_building() {
 }
 
 Building* Bulldozer::spawn_building(BuildingType type, const Vector3 &position) {
-    Building *building = memnew(Building);
+    Building *building = nullptr;
     
     if (type == BuildingType::POWER_PLANT) {
+        building = memnew(Building);
         building->set_building_name("Power Plant");
         building->set_building_size(8.0f);
         building->set_building_height(6.0f);
@@ -1140,27 +1322,24 @@ Building* Bulldozer::spawn_building(BuildingType type, const Vector3 &position) 
             building->set_model_scale(0.05f);
         }
     } else if (type == BuildingType::BARRACKS) {
-        building->set_building_name("Barracks");
-        building->set_building_size(6.0f);
-        building->set_building_height(3.0f);
-        building->set_max_health(1500);
-        building->set_health(1500);
-        if (!barracks_model.is_empty()) {
-            building->set_model_path(barracks_model);
-            building->set_model_scale(0.05f);
-        }
+        // Use Barracks class which creates its own detailed 3D model
+        Barracks *barracks = memnew(Barracks);
+        building = barracks;
+        // Barracks constructor already sets name, size, health, etc.
+    } else {
+        // Default fallback
+        building = memnew(Building);
     }
     
     // Add to scene
     get_tree()->get_root()->add_child(building);
     
-    // Try to get terrain height directly from TerrainGenerator
+    // Try to get terrain height directly from cached TerrainGenerator
     float terrain_y = position.y;
-    Node *terrain_node = get_tree()->get_root()->find_child("TerrainGenerator", true, false);
-    if (terrain_node) {
+    if (cached_terrain_generator) {
         UtilityFunctions::print("Building: Found TerrainGenerator node");
         // Call get_height_at on the terrain generator
-        Variant height_result = terrain_node->call("get_height_at", position.x, position.z);
+        Variant height_result = cached_terrain_generator->call("get_height_at", position.x, position.z);
         UtilityFunctions::print("Building: get_height_at returned type ", height_result.get_type(), " value ", height_result);
         if (height_result.get_type() == Variant::FLOAT || height_result.get_type() == Variant::INT) {
             terrain_y = (float)height_result;

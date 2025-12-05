@@ -89,12 +89,13 @@ struct TerrainConfig {
     float snow_full_height = 18.0f;  // Height where terrain is fully snow covered
     
     // Tree settings
-    int tree_count = 2000;           // Number of trees to spawn
+    int tree_count = 0;              // Number of trees to spawn (set to 0 to disable)
     float tree_min_height = 2.0f;    // Minimum terrain height for trees
     float tree_max_height = 12.0f;   // Maximum terrain height for trees
     float tree_max_slope = 0.4f;     // Maximum slope for tree placement
-    float tree_min_spacing = 5.0f;   // Minimum distance between trees
+    float tree_min_spacing = 8.0f;   // Minimum distance between trees
     float tree_center_clear = 50.0f; // Keep center clear for player base
+    float tree_scale = 0.3f;         // Base scale for tree models
     
     // Random seed
     int seed = 12345;
@@ -136,6 +137,8 @@ private:
     godot::Ref<godot::ArrayMesh> tree_mesh;
     godot::Ref<godot::StandardMaterial3D> tree_trunk_material;
     godot::Ref<godot::StandardMaterial3D> tree_leaves_material;
+    godot::Ref<godot::StandardMaterial3D> pine_foliage_material;
+    godot::Ref<godot::StandardMaterial3D> decid_foliage_material;
     
     // Rock meshes and materials
     godot::Node3D *rocks_container = nullptr;
@@ -214,6 +217,13 @@ private:
     void generate_trees();
     void create_tree_mesh();
     bool is_valid_tree_position(float x, float z) const;
+    
+    // Realistic tree mesh creation
+    godot::Ref<godot::ArrayMesh> create_realistic_trunk_mesh(float height, float base_radius, int segments, int seed);
+    godot::Ref<godot::ArrayMesh> create_foliage_branch_mesh(float width, float height);
+    godot::Ref<godot::ArrayMesh> create_pine_branch_mesh(float width, float height);
+    void add_tree_branches(godot::Node3D *tree, float trunk_height, int branch_count, int seed, bool is_pine);
+    void generate_procedural_trees_fallback();
     
     // Rock and mountain decoration
     void generate_mountain_rocks();

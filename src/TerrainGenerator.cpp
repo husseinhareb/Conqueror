@@ -13,10 +13,12 @@
 #include <godot_cpp/classes/plane_mesh.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
 #include <godot_cpp/classes/capsule_mesh.hpp>
+#include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/multi_mesh_instance3d.hpp>
 #include <godot_cpp/classes/multi_mesh.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
@@ -26,6 +28,7 @@
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/sky.hpp>
 #include <godot_cpp/classes/procedural_sky_material.hpp>
+#include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cmath>
 #include <vector>
@@ -196,7 +199,8 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     // Generate vegetation and rocks
     generate_trees();
     generate_mountain_rocks();
-    generate_snow_caps();
+    // Snow is handled by terrain shader blending - no need for separate meshes
+    // generate_snow_caps();
     generate_grass();
     
     // Setup environment (fog, lighting, sky)
@@ -1197,47 +1201,378 @@ Vector3 TerrainGenerator::get_world_center() const {
     return Vector3(0, 0, 0);
 }
 
+// ============================================================================
+// REALISTIC TREE MESH CREATION - L-SYSTEM STYLE BRANCHING
+// ============================================================================
+
+Ref<ArrayMesh> TerrainGenerator::create_realistic_trunk_mesh(float height, float base_radius, int segments, int seed) {
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    // Create a natural trunk with taper, twist, and bark-like bumps
+    int height_segments = 12;
+    float top_radius = base_radius * 0.25f;
+    
+    // Random variation
+    float twist = ((float)((seed * 7654) % 100) / 100.0f) * 0.5f;
+    float lean_x = ((float)((seed * 12345) % 100) / 100.0f - 0.5f) * 0.15f;
+    float lean_z = ((float)((seed * 54321) % 100) / 100.0f - 0.5f) * 0.15f;
+    
+    for (int j = 0; j <= height_segments; j++) {
+        float t = (float)j / height_segments;
+        float y = t * height;
+        
+        // Non-linear taper - thicker at base, thinner at top
+        float taper = 1.0f - pow(t, 0.7f);
+        float radius = base_radius * taper + top_radius * (1.0f - taper);
+        
+        // Lean and twist
+        float offset_x = lean_x * y;
+        float offset_z = lean_z * y;
+        float twist_angle = twist * t * Math_PI;
+        
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float)i / segments * Math_TAU + twist_angle;
+            
+            // Bark bumps and irregularity
+            float bump = 1.0f + sin(angle * 5 + seed + y * 2.0f) * 0.08f 
+                             + sin(angle * 11 + seed * 2 + y * 3.0f) * 0.04f
+                             + sin(y * 4.0f + angle * 3) * 0.03f;
+            float r = radius * bump;
+            
+            float x = cos(angle) * r + offset_x;
+            float z = sin(angle) * r + offset_z;
+            
+            Vector3 normal = Vector3(cos(angle), 0.15f, sin(angle)).normalized();
+            st->set_normal(normal);
+            st->set_uv(Vector2((float)i / segments * 2.0f, t * 3.0f));
+            st->add_vertex(Vector3(x, y, z));
+        }
+    }
+    
+    // Create triangles
+    for (int j = 0; j < height_segments; j++) {
+        for (int i = 0; i < segments; i++) {
+            int current = j * (segments + 1) + i;
+            int next = current + 1;
+            int above = current + segments + 1;
+            int above_next = above + 1;
+            
+            st->add_index(current);
+            st->add_index(above);
+            st->add_index(next);
+            
+            st->add_index(next);
+            st->add_index(above);
+            st->add_index(above_next);
+        }
+    }
+    
+    st->generate_tangents();
+    return st->commit();
+}
+
+Ref<ArrayMesh> TerrainGenerator::create_foliage_branch_mesh(float width, float height) {
+    // Create a dense leaf cluster using multiple angled quads
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    int vertex_count = 0;
+    
+    // Create a sphere of leaf quads
+    int num_leaves = 12;
+    for (int i = 0; i < num_leaves; i++) {
+        float phi = ((float)(i * 2654435761u % 100) / 100.0f) * Math_PI;
+        float theta = ((float)(i * 1597334677u % 100) / 100.0f) * Math_TAU;
+        
+        float leaf_size = width * (0.3f + ((float)(i * 987654321u % 100) / 100.0f) * 0.4f);
+        
+        // Position on sphere surface
+        float r = width * 0.3f;
+        Vector3 center(
+            sin(phi) * cos(theta) * r,
+            cos(phi) * r * 0.8f,
+            sin(phi) * sin(theta) * r
+        );
+        
+        // Random orientation
+        float rot = ((float)(i * 123456789u % 360));
+        float tilt = ((float)(i * 987654321u % 60) - 30.0f) * Math_PI / 180.0f;
+        
+        // Create quad vertices
+        Vector3 right(cos(rot * Math_PI / 180.0f) * leaf_size * 0.5f, 0, sin(rot * Math_PI / 180.0f) * leaf_size * 0.5f);
+        Vector3 up(0, leaf_size * 0.5f, 0);
+        up = up.rotated(right.normalized(), tilt);
+        
+        Vector3 v0 = center - right - up;
+        Vector3 v1 = center + right - up;
+        Vector3 v2 = center + right + up;
+        Vector3 v3 = center - right + up;
+        
+        Vector3 normal = right.cross(up).normalized();
+        
+        st->set_normal(normal);
+        st->set_uv(Vector2(0, 1)); st->add_vertex(v0);
+        st->set_uv(Vector2(1, 1)); st->add_vertex(v1);
+        st->set_uv(Vector2(1, 0)); st->add_vertex(v2);
+        st->set_uv(Vector2(0, 0)); st->add_vertex(v3);
+        
+        int base = vertex_count;
+        st->add_index(base + 0); st->add_index(base + 1); st->add_index(base + 2);
+        st->add_index(base + 0); st->add_index(base + 2); st->add_index(base + 3);
+        // Back face
+        st->add_index(base + 2); st->add_index(base + 1); st->add_index(base + 0);
+        st->add_index(base + 3); st->add_index(base + 2); st->add_index(base + 0);
+        
+        vertex_count += 4;
+    }
+    
+    st->generate_tangents();
+    return st->commit();
+}
+
+Ref<ArrayMesh> TerrainGenerator::create_pine_branch_mesh(float width, float height) {
+    // Create realistic pine branch with needle clusters
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    int vertex_count = 0;
+    int branch_count = 7;
+    
+    for (int b = 0; b < branch_count; b++) {
+        float branch_angle = (float)b / branch_count * Math_TAU + ((float)(b * 12345 % 100) / 100.0f) * 0.3f;
+        float branch_length = width * (0.4f + ((float)(b * 54321 % 100) / 100.0f) * 0.2f);
+        float droop = 0.25f + ((float)(b * 98765 % 100) / 100.0f) * 0.15f;
+        
+        // Branch direction
+        Vector3 branch_dir(
+            cos(branch_angle) * cos(droop),
+            -sin(droop),
+            sin(branch_angle) * cos(droop)
+        );
+        branch_dir = branch_dir.normalized();
+        
+        // Create needle clusters along branch
+        int clusters = 4;
+        for (int c = 0; c < clusters; c++) {
+            float t = (float)(c + 1) / (clusters + 1);
+            Vector3 pos = branch_dir * branch_length * t;
+            
+            float cluster_size = height * (0.3f + (1.0f - t) * 0.3f);
+            
+            // Create 3 crossing quads per cluster
+            for (int q = 0; q < 3; q++) {
+                float q_angle = branch_angle + (float)q / 3.0f * Math_PI;
+                
+                Vector3 right(cos(q_angle) * cluster_size * 0.5f, 0, sin(q_angle) * cluster_size * 0.5f);
+                Vector3 up(0, cluster_size * 0.4f, 0);
+                
+                Vector3 v0 = pos - right;
+                Vector3 v1 = pos + right;
+                Vector3 v2 = pos + right + up;
+                Vector3 v3 = pos - right + up;
+                
+                Vector3 normal = right.cross(up).normalized();
+                
+                st->set_normal(normal);
+                st->set_uv(Vector2(0, 1)); st->add_vertex(v0);
+                st->set_uv(Vector2(1, 1)); st->add_vertex(v1);
+                st->set_uv(Vector2(1, 0)); st->add_vertex(v2);
+                st->set_uv(Vector2(0, 0)); st->add_vertex(v3);
+                
+                int base = vertex_count;
+                st->add_index(base + 0); st->add_index(base + 1); st->add_index(base + 2);
+                st->add_index(base + 0); st->add_index(base + 2); st->add_index(base + 3);
+                st->add_index(base + 2); st->add_index(base + 1); st->add_index(base + 0);
+                st->add_index(base + 3); st->add_index(base + 2); st->add_index(base + 0);
+                
+                vertex_count += 4;
+            }
+        }
+    }
+    
+    st->generate_tangents();
+    return st->commit();
+}
+
+void TerrainGenerator::add_tree_branches(Node3D *tree, float trunk_height, int branch_count, int seed, bool is_pine) {
+    // Create realistic 3D branches with proper geometry
+    float start_height = is_pine ? trunk_height * 0.25f : trunk_height * 0.5f;
+    float height_range = trunk_height * 0.6f;
+    
+    for (int i = 0; i < branch_count; i++) {
+        int branch_seed = seed + i * 7919;
+        float t = (float)i / branch_count;
+        float height = start_height + t * height_range;
+        
+        // Spiral arrangement with some randomness
+        float base_angle = (float)i * 137.5f * Math_PI / 180.0f; // Golden angle
+        float angle = base_angle + ((float)((branch_seed >> 4) % 60) - 30.0f) * Math_PI / 180.0f;
+        
+        // Branch length decreases towards top
+        float length_factor = 1.0f - t * 0.5f;
+        float branch_length = (0.8f + ((float)((branch_seed >> 8) % 100) / 200.0f)) * length_factor;
+        
+        // Upward angle for lower branches, more horizontal for upper
+        float upward = is_pine ? -0.3f - t * 0.2f : 0.4f - t * 0.5f;
+        
+        // Branch thickness
+        float thickness = 0.08f * (1.0f - t * 0.6f);
+        
+        // Create branch using SurfaceTool for proper 3D geometry
+        Ref<SurfaceTool> st;
+        st.instantiate();
+        st->begin(Mesh::PRIMITIVE_TRIANGLES);
+        
+        int segs = 5;
+        int radial = 6;
+        Vector3 dir(cos(angle), upward, sin(angle));
+        dir = dir.normalized();
+        
+        // Find perpendicular vectors
+        Vector3 up(0, 1, 0);
+        Vector3 right = dir.cross(up).normalized();
+        Vector3 actual_up = right.cross(dir).normalized();
+        
+        for (int j = 0; j <= segs; j++) {
+            float seg_t = (float)j / segs;
+            float seg_radius = thickness * (1.0f - seg_t * 0.7f);
+            Vector3 center = dir * branch_length * seg_t;
+            
+            for (int k = 0; k <= radial; k++) {
+                float ring_angle = (float)k / radial * Math_TAU;
+                Vector3 offset = (right * cos(ring_angle) + actual_up * sin(ring_angle)) * seg_radius;
+                Vector3 pos = center + offset;
+                Vector3 normal = offset.normalized();
+                
+                st->set_normal(normal);
+                st->set_uv(Vector2((float)k / radial, seg_t * 2.0f));
+                st->add_vertex(pos);
+            }
+        }
+        
+        for (int j = 0; j < segs; j++) {
+            for (int k = 0; k < radial; k++) {
+                int current = j * (radial + 1) + k;
+                int next = current + 1;
+                int above = current + radial + 1;
+                int above_next = above + 1;
+                
+                st->add_index(current);
+                st->add_index(above);
+                st->add_index(next);
+                st->add_index(next);
+                st->add_index(above);
+                st->add_index(above_next);
+            }
+        }
+        
+        st->generate_tangents();
+        Ref<ArrayMesh> branch_mesh = st->commit();
+        
+        MeshInstance3D *branch = memnew(MeshInstance3D);
+        branch->set_mesh(branch_mesh);
+        branch->set_position(Vector3(0, height, 0));
+        branch->set_surface_override_material(0, tree_trunk_material);
+        tree->add_child(branch);
+    }
+}
+
 void TerrainGenerator::create_tree_mesh() {
-    // Create shared materials for all trees with realistic textures
+    // Create shared materials for all trees with realistic PBR textures
+    UtilityFunctions::print("TerrainGenerator: Creating realistic tree materials...");
+    
+    // === TRUNK MATERIAL (realistic bark) ===
     tree_trunk_material.instantiate();
     
-    // Try to load bark texture
     String bark_path = "res://assets/textures/vegetation/bark/bark_albedo.jpg";
-    if (FileAccess::file_exists(bark_path)) {
-        Ref<ImageTexture> bark_tex = load_texture_from_file(bark_path);
-        if (bark_tex.is_valid()) {
-            tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, bark_tex);
-        }
-        Ref<ImageTexture> bark_norm = load_texture_from_file("res://assets/textures/vegetation/bark/bark_normal.jpg");
-        if (bark_norm.is_valid()) {
-            tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, bark_norm);
-            tree_trunk_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
-        }
+    Ref<ImageTexture> bark_tex = load_texture_from_file(bark_path);
+    Ref<ImageTexture> bark_norm = load_texture_from_file("res://assets/textures/vegetation/bark/bark_normal.jpg");
+    Ref<ImageTexture> bark_rough = load_texture_from_file("res://assets/textures/vegetation/bark/bark_roughness.jpg");
+    
+    if (bark_tex.is_valid()) {
+        tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, bark_tex);
+        tree_trunk_material->set_albedo(Color(0.85f, 0.75f, 0.65f)); // Slight warm tint
+        UtilityFunctions::print("TerrainGenerator: Loaded bark albedo texture");
     } else {
-        tree_trunk_material->set_albedo(Color(0.4f, 0.25f, 0.15f)); // Brown trunk fallback
+        tree_trunk_material->set_albedo(Color(0.4f, 0.28f, 0.18f)); // Brown bark fallback
     }
-    tree_trunk_material->set_roughness(0.9f);
-    tree_trunk_material->set_uv1_scale(Vector3(2.0f, 4.0f, 1.0f)); // Scale UVs for bark
+    if (bark_norm.is_valid()) {
+        tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, bark_norm);
+        tree_trunk_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        tree_trunk_material->set_normal_scale(2.0f); // Strong bark detail
+    }
+    if (bark_rough.is_valid()) {
+        tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_ROUGHNESS, bark_rough);
+    } else {
+        tree_trunk_material->set_roughness(0.9f);
+    }
+    tree_trunk_material->set_metallic(0.0f);
+    tree_trunk_material->set_uv1_scale(Vector3(2.0f, 4.0f, 1.0f)); // Stretch vertically for bark
     
-    tree_leaves_material.instantiate();
-    
-    // Try to load foliage texture
+    // Load foliage texture for use by both materials
     String foliage_path = "res://assets/textures/vegetation/foliage/foliage_albedo.jpg";
-    if (FileAccess::file_exists(foliage_path)) {
-        Ref<ImageTexture> foliage_tex = load_texture_from_file(foliage_path);
-        if (foliage_tex.is_valid()) {
-            tree_leaves_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, foliage_tex);
-        }
-        Ref<ImageTexture> foliage_norm = load_texture_from_file("res://assets/textures/vegetation/foliage/foliage_normal.jpg");
-        if (foliage_norm.is_valid()) {
-            tree_leaves_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, foliage_norm);
-            tree_leaves_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
-        }
-    } else {
-        tree_leaves_material->set_albedo(Color(0.15f, 0.45f, 0.12f)); // Dark green leaves fallback
+    Ref<ImageTexture> foliage_tex = load_texture_from_file(foliage_path);
+    Ref<ImageTexture> foliage_norm = load_texture_from_file("res://assets/textures/vegetation/foliage/foliage_normal.jpg");
+    
+    if (foliage_tex.is_valid()) {
+        UtilityFunctions::print("TerrainGenerator: Loaded foliage texture");
     }
-    tree_leaves_material->set_roughness(0.8f);
-    tree_leaves_material->set_uv1_scale(Vector3(2.0f, 2.0f, 1.0f));
+    
+    // === PINE FOLIAGE MATERIAL (dark, dense, conifer-like) ===
+    pine_foliage_material.instantiate();
+    if (foliage_tex.is_valid()) {
+        pine_foliage_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, foliage_tex);
+        pine_foliage_material->set_albedo(Color(0.25f, 0.45f, 0.2f)); // Dark green tint
+    } else {
+        pine_foliage_material->set_albedo(Color(0.08f, 0.32f, 0.1f)); // Dark forest green
+    }
+    if (foliage_norm.is_valid()) {
+        pine_foliage_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, foliage_norm);
+        pine_foliage_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        pine_foliage_material->set_normal_scale(1.0f);
+    }
+    pine_foliage_material->set_roughness(0.9f);
+    pine_foliage_material->set_metallic(0.0f);
+    pine_foliage_material->set_uv1_scale(Vector3(3.0f, 3.0f, 1.0f));
+    // Subsurface scattering for realistic light through needles
+    pine_foliage_material->set_feature(StandardMaterial3D::FEATURE_SUBSURFACE_SCATTERING, true);
+    pine_foliage_material->set_subsurface_scattering_strength(0.4f);
+    // Backlight for translucency when sun behind
+    pine_foliage_material->set_feature(StandardMaterial3D::FEATURE_BACKLIGHT, true);
+    pine_foliage_material->set_backlight(Color(0.1f, 0.25f, 0.08f));
+    pine_foliage_material->set_cull_mode(StandardMaterial3D::CULL_DISABLED); // See foliage from all sides
+    
+    // === DECIDUOUS FOLIAGE MATERIAL (vibrant, leafy) ===
+    decid_foliage_material.instantiate();
+    if (foliage_tex.is_valid()) {
+        decid_foliage_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, foliage_tex);
+        decid_foliage_material->set_albedo(Color(0.4f, 0.7f, 0.35f)); // Vibrant green tint
+    } else {
+        decid_foliage_material->set_albedo(Color(0.15f, 0.5f, 0.12f)); // Vibrant green
+    }
+    if (foliage_norm.is_valid()) {
+        decid_foliage_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, foliage_norm);
+        decid_foliage_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        decid_foliage_material->set_normal_scale(1.2f);
+    }
+    decid_foliage_material->set_roughness(0.8f);
+    decid_foliage_material->set_metallic(0.0f);
+    decid_foliage_material->set_uv1_scale(Vector3(4.0f, 4.0f, 1.0f));
+    // Subsurface scattering for translucent leaves
+    decid_foliage_material->set_feature(StandardMaterial3D::FEATURE_SUBSURFACE_SCATTERING, true);
+    decid_foliage_material->set_subsurface_scattering_strength(0.5f);
+    // Backlight for sun through leaves
+    decid_foliage_material->set_feature(StandardMaterial3D::FEATURE_BACKLIGHT, true);
+    decid_foliage_material->set_backlight(Color(0.15f, 0.4f, 0.1f));
+    decid_foliage_material->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
+    
+    tree_leaves_material = decid_foliage_material;
+    
+    UtilityFunctions::print("TerrainGenerator: Tree materials created");
 }
 
 bool TerrainGenerator::is_valid_tree_position(float x, float z) const {
@@ -1310,87 +1645,79 @@ float TerrainGenerator::get_snow_coverage(float height, float slope) const {
 }
 
 Ref<ArrayMesh> TerrainGenerator::create_rock_mesh(float size, int detail_level, int seed) {
-    // Create an irregular rocky mesh using deformed icosphere approach
+    // Create a proper rock mesh using a deformed icosahedron for natural look
     Ref<SurfaceTool> st;
     st.instantiate();
     st->begin(Mesh::PRIMITIVE_TRIANGLES);
     
-    // Generate deformed sphere vertices
-    std::vector<Vector3> vertices;
-    std::vector<int> indices;
-    
-    // Simple approach: create a deformed box/polyhedron
-    // Base vertices of a rough cube
     float s = size * 0.5f;
     
-    // Create multiple deformed vertices
-    auto deform_vertex = [seed, size](Vector3 v, int vertex_idx) -> Vector3 {
-        int h = (seed + vertex_idx * 374761393) % 2147483647;
-        h = (h ^ (h >> 13)) * 1274126177;
-        float noise_x = ((float)((h >> 0) % 1000) / 1000.0f - 0.5f) * size * 0.3f;
-        float noise_y = ((float)((h >> 10) % 1000) / 1000.0f - 0.5f) * size * 0.25f;
-        float noise_z = ((float)((h >> 20) % 1000) / 1000.0f - 0.5f) * size * 0.3f;
-        return v + Vector3(noise_x, noise_y, noise_z);
+    // Hash function for consistent random deformation
+    auto hash_int = [](int x) -> int {
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = (x >> 16) ^ x;
+        return x;
     };
     
-    // Create a rough dodecahedron-like shape for more natural rocks
-    // Top vertices
-    vertices.push_back(deform_vertex(Vector3(0, s * 1.1f, 0), 0)); // Top peak
-    vertices.push_back(deform_vertex(Vector3(s * 0.6f, s * 0.7f, s * 0.4f), 1));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.5f, s * 0.7f, s * 0.6f), 2));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.6f, s * 0.7f, -s * 0.3f), 3));
-    vertices.push_back(deform_vertex(Vector3(s * 0.4f, s * 0.7f, -s * 0.6f), 4));
-    
-    // Middle ring
-    vertices.push_back(deform_vertex(Vector3(s * 0.9f, 0, s * 0.3f), 5));
-    vertices.push_back(deform_vertex(Vector3(s * 0.3f, 0, s * 0.9f), 6));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.7f, 0, s * 0.7f), 7));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.9f, 0, -s * 0.2f), 8));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.2f, 0, -s * 0.9f), 9));
-    vertices.push_back(deform_vertex(Vector3(s * 0.7f, 0, -s * 0.7f), 10));
-    
-    // Bottom vertices
-    vertices.push_back(deform_vertex(Vector3(s * 0.4f, -s * 0.6f, s * 0.5f), 11));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.5f, -s * 0.5f, s * 0.4f), 12));
-    vertices.push_back(deform_vertex(Vector3(-s * 0.4f, -s * 0.6f, -s * 0.5f), 13));
-    vertices.push_back(deform_vertex(Vector3(s * 0.5f, -s * 0.5f, -s * 0.4f), 14));
-    vertices.push_back(deform_vertex(Vector3(0, -s * 0.8f, 0), 15)); // Bottom
-    
-    // Define triangular faces connecting these vertices
-    // Top cap
-    int top_tris[] = {
-        0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1,
-        // Upper-middle connections
-        1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7, 3,
-        3, 7, 8, 3, 8, 9, 3, 9, 4, 4, 9, 10,
-        4, 10, 5, 4, 5, 1,
-        // Middle band
-        5, 11, 6, 6, 11, 12, 6, 12, 7, 7, 12, 8,
-        8, 12, 13, 8, 13, 9, 9, 13, 14, 9, 14, 10,
-        10, 14, 11, 10, 11, 5,
-        // Bottom cap
-        15, 12, 11, 15, 13, 12, 15, 14, 13, 15, 11, 14
+    // Deform vertex with noise based on seed
+    auto deform = [&](Vector3 v, int idx) -> Vector3 {
+        int h = hash_int(seed + idx * 127);
+        float nx = ((h & 0xFF) / 255.0f - 0.5f) * size * 0.35f;
+        float ny = (((h >> 8) & 0xFF) / 255.0f - 0.5f) * size * 0.25f;
+        float nz = (((h >> 16) & 0xFF) / 255.0f - 0.5f) * size * 0.35f;
+        return v + Vector3(nx, ny, nz);
     };
     
-    for (int i = 0; i < 60; i += 3) {
-        indices.push_back(top_tris[i]);
-        indices.push_back(top_tris[i + 1]);
-        indices.push_back(top_tris[i + 2]);
-    }
+    // Create vertices for a rough octahedron-based rock
+    std::vector<Vector3> verts;
     
-    // Add vertices and indices to surface tool
-    for (size_t i = 0; i < indices.size(); i += 3) {
-        Vector3 v0 = vertices[indices[i]];
-        Vector3 v1 = vertices[indices[i + 1]];
-        Vector3 v2 = vertices[indices[i + 2]];
+    // 6 main vertices (octahedron)
+    verts.push_back(deform(Vector3(0, s * 1.0f, 0), 0));      // Top
+    verts.push_back(deform(Vector3(s * 0.9f, 0, 0), 1));      // Right
+    verts.push_back(deform(Vector3(0, 0, s * 0.9f), 2));      // Front  
+    verts.push_back(deform(Vector3(-s * 0.9f, 0, 0), 3));     // Left
+    verts.push_back(deform(Vector3(0, 0, -s * 0.9f), 4));     // Back
+    verts.push_back(deform(Vector3(0, -s * 0.7f, 0), 5));     // Bottom
+    
+    // Add edge midpoints for more detail
+    verts.push_back(deform(Vector3(s * 0.5f, s * 0.5f, s * 0.5f), 6));   // Top-front-right
+    verts.push_back(deform(Vector3(-s * 0.5f, s * 0.5f, s * 0.5f), 7));  // Top-front-left
+    verts.push_back(deform(Vector3(-s * 0.5f, s * 0.5f, -s * 0.5f), 8)); // Top-back-left
+    verts.push_back(deform(Vector3(s * 0.5f, s * 0.5f, -s * 0.5f), 9));  // Top-back-right
+    verts.push_back(deform(Vector3(s * 0.5f, -s * 0.4f, s * 0.5f), 10)); // Bot-front-right
+    verts.push_back(deform(Vector3(-s * 0.5f, -s * 0.4f, s * 0.5f), 11));// Bot-front-left
+    verts.push_back(deform(Vector3(-s * 0.5f, -s * 0.4f, -s * 0.5f), 12));// Bot-back-left
+    verts.push_back(deform(Vector3(s * 0.5f, -s * 0.4f, -s * 0.5f), 13)); // Bot-back-right
+    
+    // Define faces (triangles) - proper winding order for outward normals
+    int faces[] = {
+        // Top pyramid
+        0, 6, 7,   0, 7, 8,   0, 8, 9,   0, 9, 6,
+        // Upper band connecting to midpoints
+        6, 2, 7,   7, 2, 3,   7, 3, 8,   8, 3, 4,
+        8, 4, 9,   9, 4, 1,   9, 1, 6,   6, 1, 2,
+        // Lower band
+        2, 10, 11, 2, 11, 3,  3, 11, 12, 3, 12, 4,
+        4, 12, 13, 4, 13, 1,  1, 13, 10, 1, 10, 2,
+        // Bottom pyramid
+        5, 11, 10, 5, 12, 11, 5, 13, 12, 5, 10, 13
+    };
+    
+    int num_faces = sizeof(faces) / sizeof(faces[0]);
+    
+    // Build mesh with proper normals
+    for (int i = 0; i < num_faces; i += 3) {
+        Vector3 v0 = verts[faces[i]];
+        Vector3 v1 = verts[faces[i + 1]];
+        Vector3 v2 = verts[faces[i + 2]];
         
         // Calculate face normal
-        Vector3 edge1 = v1 - v0;
-        Vector3 edge2 = v2 - v0;
-        Vector3 normal = edge1.cross(edge2).normalized();
+        Vector3 normal = (v1 - v0).cross(v2 - v0).normalized();
         
+        // Add triangle vertices with UV and normal
         st->set_normal(normal);
-        st->set_uv(Vector2(0.5f, 0.5f));
+        st->set_uv(Vector2(0.5f, 0.0f));
         st->add_vertex(v0);
         
         st->set_normal(normal);
@@ -1929,85 +2256,68 @@ void TerrainGenerator::generate_snow_caps() {
 }
 
 void TerrainGenerator::generate_trees() {
-    UtilityFunctions::print("TerrainGenerator: Generating trees...");
-    
-    // Create materials
-    create_tree_mesh();
+    UtilityFunctions::print("TerrainGenerator: Generating trees from 3D models...");
     
     // Create container for all trees
     trees_container = memnew(Node3D);
     trees_container->set_name("Trees");
     add_child(trees_container);
     
-    // === PINE TREE MESHES ===
-    // Trunk for pine trees (tall and thin)
-    Ref<CylinderMesh> pine_trunk_mesh;
-    pine_trunk_mesh.instantiate();
-    pine_trunk_mesh->set_top_radius(0.12f);
-    pine_trunk_mesh->set_bottom_radius(0.22f);
-    pine_trunk_mesh->set_height(3.5f);
-    pine_trunk_mesh->set_radial_segments(6);
+    // Try to load tree GLB models
+    ResourceLoader *loader = ResourceLoader::get_singleton();
     
-    // Multiple cone layers for pine trees (bottom, middle, top)
-    Ref<CylinderMesh> pine_cone_bottom;
-    pine_cone_bottom.instantiate();
-    pine_cone_bottom->set_top_radius(0.0f);
-    pine_cone_bottom->set_bottom_radius(1.8f);
-    pine_cone_bottom->set_height(2.5f);
-    pine_cone_bottom->set_radial_segments(8);
+    // Define tree model paths - check assets/textures/trees/ folder
+    std::vector<String> pine_model_paths = {
+        "res://assets/textures/trees/tree_part3.glb",
+        "res://assets/textures/trees/tree_part4.glb",
+        "res://assets/trees/pine_tree.glb",
+        "res://assets/trees/conifer.glb"
+    };
     
-    Ref<CylinderMesh> pine_cone_middle;
-    pine_cone_middle.instantiate();
-    pine_cone_middle->set_top_radius(0.0f);
-    pine_cone_middle->set_bottom_radius(1.4f);
-    pine_cone_middle->set_height(2.0f);
-    pine_cone_middle->set_radial_segments(8);
+    std::vector<String> deciduous_model_paths = {
+        "res://assets/textures/trees/tree_part3.glb",
+        "res://assets/textures/trees/tree_part4.glb",
+        "res://assets/trees/tree.glb",
+        "res://assets/trees/oak_tree.glb"
+    };
     
-    Ref<CylinderMesh> pine_cone_top;
-    pine_cone_top.instantiate();
-    pine_cone_top->set_top_radius(0.0f);
-    pine_cone_top->set_bottom_radius(0.9f);
-    pine_cone_top->set_height(1.5f);
-    pine_cone_top->set_radial_segments(8);
+    // Load available tree models
+    std::vector<Ref<PackedScene>> pine_scenes;
+    std::vector<Ref<PackedScene>> deciduous_scenes;
     
-    // === DECIDUOUS TREE MESHES ===
-    // Trunk for deciduous trees (shorter, thicker)
-    Ref<CylinderMesh> decid_trunk_mesh;
-    decid_trunk_mesh.instantiate();
-    decid_trunk_mesh->set_top_radius(0.18f);
-    decid_trunk_mesh->set_bottom_radius(0.35f);
-    decid_trunk_mesh->set_height(2.5f);
-    decid_trunk_mesh->set_radial_segments(8);
+    for (const String &path : pine_model_paths) {
+        if (FileAccess::file_exists(path)) {
+            Ref<PackedScene> scene = loader->load(path);
+            if (scene.is_valid()) {
+                pine_scenes.push_back(scene);
+                UtilityFunctions::print("TerrainGenerator: Loaded pine tree model: ", path);
+            }
+        }
+    }
     
-    // Spherical canopy for deciduous (using capsule for rounded look)
-    Ref<CapsuleMesh> decid_canopy;
-    decid_canopy.instantiate();
-    decid_canopy->set_radius(1.5f);
-    decid_canopy->set_height(3.0f);
-    decid_canopy->set_radial_segments(12);
-    decid_canopy->set_rings(6);
+    for (const String &path : deciduous_model_paths) {
+        if (FileAccess::file_exists(path)) {
+            Ref<PackedScene> scene = loader->load(path);
+            if (scene.is_valid()) {
+                deciduous_scenes.push_back(scene);
+                UtilityFunctions::print("TerrainGenerator: Loaded deciduous tree model: ", path);
+            }
+        }
+    }
     
-    // Additional smaller spheres for fuller canopy
-    Ref<CapsuleMesh> decid_canopy_small;
-    decid_canopy_small.instantiate();
-    decid_canopy_small->set_radius(0.9f);
-    decid_canopy_small->set_height(1.8f);
-    decid_canopy_small->set_radial_segments(8);
-    decid_canopy_small->set_rings(4);
+    bool has_pine_models = !pine_scenes.empty();
+    bool has_deciduous_models = !deciduous_scenes.empty();
     
-    // Create darker green material for pine trees - rich forest green
-    Ref<StandardMaterial3D> pine_leaves_material;
-    pine_leaves_material.instantiate();
-    pine_leaves_material->set_albedo(Color(0.08f, 0.35f, 0.12f)); // Forest green
-    pine_leaves_material->set_roughness(0.9f);
-    pine_leaves_material->set_metallic(0.0f);
-    
-    // Create lighter green material for deciduous trees - vibrant
-    Ref<StandardMaterial3D> decid_leaves_material;
-    decid_leaves_material.instantiate();
-    decid_leaves_material->set_albedo(Color(0.12f, 0.55f, 0.15f)); // Vibrant green
-    decid_leaves_material->set_roughness(0.85f);
-    decid_leaves_material->set_metallic(0.0f);
+    if (!has_pine_models && !has_deciduous_models) {
+        UtilityFunctions::print("TerrainGenerator: No tree models found! Please add .glb tree models to res://assets/trees/");
+        UtilityFunctions::print("TerrainGenerator: Expected files like: tree.glb, pine_tree.glb, oak_tree.glb");
+        UtilityFunctions::print("TerrainGenerator: Falling back to procedural trees...");
+        
+        // Fall back to simple procedural trees
+        create_tree_mesh();
+        generate_procedural_trees_fallback();
+        return;
+    }
     
     float half_world = (config.map_size * config.tile_size) * 0.5f;
     
@@ -2016,7 +2326,7 @@ void TerrainGenerator::generate_trees() {
     placed_trees.reserve(config.tree_count);
     
     int attempts = 0;
-    int max_attempts = config.tree_count * 10; // Prevent infinite loop
+    int max_attempts = config.tree_count * 10;
     int trees_placed = 0;
     int pine_count = 0;
     int decid_count = 0;
@@ -2048,121 +2358,173 @@ void TerrainGenerator::generate_trees() {
         // Get terrain height at this position
         float terrain_height = get_height_at(x, z);
         
-        // Random tree size variation
+        // Random tree size variation - use config.tree_scale as base
         int hash3 = (hash2 * 69621) % 2147483647;
-        float scale = 0.7f + ((float)(hash3 % 1000) / 1000.0f) * 0.6f; // 0.7 to 1.3
+        float scale = config.tree_scale * (0.8f + ((float)(hash3 % 1000) / 1000.0f) * 0.4f); // 0.8x to 1.2x of base scale
         
         // Random rotation
         float rotation = ((float)(hash3 % 360));
         
-        // Determine tree type based on height and randomness
-        // Pine trees prefer higher elevations, deciduous prefer lower
+        // Slight random tilt for natural look
+        int hash_tilt = (hash3 * 11111) % 2147483647;
+        float tilt_x = ((float)(hash_tilt % 100) / 100.0f - 0.5f) * 3.0f; // -1.5 to 1.5 degrees
+        float tilt_z = ((float)((hash_tilt >> 8) % 100) / 100.0f - 0.5f) * 3.0f;
+        
+        // Determine tree type based on terrain height
         int hash4 = (hash3 * 45678) % 2147483647;
         float type_rand = (float)(hash4 % 100) / 100.0f;
-        float height_factor = (terrain_height - config.water_level) / (config.ground_level - config.water_level);
+        float height_factor = (terrain_height - config.tree_min_height) / (config.tree_max_height - config.tree_min_height);
         height_factor = Math::clamp(height_factor, 0.0f, 1.0f);
         
         // Higher terrain = more likely to be pine
-        bool is_pine = type_rand < (0.3f + height_factor * 0.5f);
+        bool want_pine = type_rand < (0.4f + height_factor * 0.4f);
         
-        // Create tree node
+        // Select which model to use
+        Node3D *tree_instance = nullptr;
+        
+        if (want_pine && has_pine_models) {
+            // Pick a random pine model
+            int model_index = hash4 % pine_scenes.size();
+            tree_instance = Object::cast_to<Node3D>(pine_scenes[model_index]->instantiate());
+            pine_count++;
+        } else if (!want_pine && has_deciduous_models) {
+            // Pick a random deciduous model  
+            int model_index = hash4 % deciduous_scenes.size();
+            tree_instance = Object::cast_to<Node3D>(deciduous_scenes[model_index]->instantiate());
+            decid_count++;
+        } else if (has_pine_models) {
+            // Fallback to pine if no deciduous available
+            int model_index = hash4 % pine_scenes.size();
+            tree_instance = Object::cast_to<Node3D>(pine_scenes[model_index]->instantiate());
+            pine_count++;
+        } else {
+            // Fallback to deciduous if no pine available
+            int model_index = hash4 % deciduous_scenes.size();
+            tree_instance = Object::cast_to<Node3D>(deciduous_scenes[model_index]->instantiate());
+            decid_count++;
+        }
+        
+        if (tree_instance) {
+            tree_instance->set_position(Vector3(x, terrain_height, z));
+            tree_instance->set_rotation_degrees(Vector3(tilt_x, rotation, tilt_z));
+            tree_instance->set_scale(Vector3(scale, scale, scale));
+            
+            trees_container->add_child(tree_instance);
+            placed_trees.push_back(new_pos);
+            trees_placed++;
+        }
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees (", pine_count, " pine, ", decid_count, " deciduous)");
+}
+
+// Fallback procedural trees if no GLB models are found
+void TerrainGenerator::generate_procedural_trees_fallback() {
+    float half_world = (config.map_size * config.tile_size) * 0.5f;
+    
+    std::vector<Vector2> placed_trees;
+    placed_trees.reserve(config.tree_count);
+    
+    int attempts = 0;
+    int max_attempts = config.tree_count * 10;
+    int trees_placed = 0;
+    
+    // Create simple cylinder + cone trees as fallback
+    Ref<CylinderMesh> trunk_mesh;
+    trunk_mesh.instantiate();
+    trunk_mesh->set_top_radius(0.15f);
+    trunk_mesh->set_bottom_radius(0.3f);
+    trunk_mesh->set_height(3.0f);
+    trunk_mesh->set_radial_segments(8);
+    
+    Ref<CylinderMesh> foliage_mesh;
+    foliage_mesh.instantiate();
+    foliage_mesh->set_top_radius(0.0f);
+    foliage_mesh->set_bottom_radius(2.0f);
+    foliage_mesh->set_height(4.0f);
+    foliage_mesh->set_radial_segments(8);
+    
+    while (trees_placed < config.tree_count && attempts < max_attempts) {
+        attempts++;
+        
+        int hash = (config.seed + attempts * 16807) % 2147483647;
+        int hash2 = (hash * 48271) % 2147483647;
+        
+        float x = ((float)(hash % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        float z = ((float)(hash2 % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        
+        if (!is_valid_tree_position(x, z)) continue;
+        
+        bool too_close = false;
+        Vector2 new_pos(x, z);
+        for (const Vector2 &pos : placed_trees) {
+            if (pos.distance_to(new_pos) < config.tree_min_spacing) {
+                too_close = true;
+                break;
+            }
+        }
+        if (too_close) continue;
+        
+        float terrain_height = get_height_at(x, z);
+        int hash3 = (hash2 * 69621) % 2147483647;
+        float scale = 0.7f + ((float)(hash3 % 1000) / 1000.0f) * 0.6f;
+        float rotation = ((float)(hash3 % 360));
+        
         Node3D *tree = memnew(Node3D);
         tree->set_position(Vector3(x, terrain_height, z));
         tree->set_rotation_degrees(Vector3(0, rotation, 0));
         tree->set_scale(Vector3(scale, scale, scale));
         
-        if (is_pine) {
-            // === PINE TREE ===
-            pine_count++;
-            
-            // Add trunk
-            MeshInstance3D *trunk = memnew(MeshInstance3D);
-            trunk->set_mesh(pine_trunk_mesh);
-            trunk->set_position(Vector3(0, 1.75f, 0));
-            trunk->set_surface_override_material(0, tree_trunk_material);
-            tree->add_child(trunk);
-            
-            // Add bottom cone layer
-            MeshInstance3D *cone1 = memnew(MeshInstance3D);
-            cone1->set_mesh(pine_cone_bottom);
-            cone1->set_position(Vector3(0, 3.0f, 0));
-            cone1->set_surface_override_material(0, pine_leaves_material);
-            tree->add_child(cone1);
-            
-            // Add middle cone layer
-            MeshInstance3D *cone2 = memnew(MeshInstance3D);
-            cone2->set_mesh(pine_cone_middle);
-            cone2->set_position(Vector3(0, 4.5f, 0));
-            cone2->set_surface_override_material(0, pine_leaves_material);
-            tree->add_child(cone2);
-            
-            // Add top cone layer
-            MeshInstance3D *cone3 = memnew(MeshInstance3D);
-            cone3->set_mesh(pine_cone_top);
-            cone3->set_position(Vector3(0, 5.8f, 0));
-            cone3->set_surface_override_material(0, pine_leaves_material);
-            tree->add_child(cone3);
-            
-        } else {
-            // === DECIDUOUS TREE ===
-            decid_count++;
-            
-            // Add trunk
-            MeshInstance3D *trunk = memnew(MeshInstance3D);
-            trunk->set_mesh(decid_trunk_mesh);
-            trunk->set_position(Vector3(0, 1.25f, 0));
-            trunk->set_surface_override_material(0, tree_trunk_material);
-            tree->add_child(trunk);
-            
-            // Add main canopy
-            MeshInstance3D *canopy = memnew(MeshInstance3D);
-            canopy->set_mesh(decid_canopy);
-            canopy->set_position(Vector3(0, 3.8f, 0));
-            canopy->set_surface_override_material(0, decid_leaves_material);
-            tree->add_child(canopy);
-            
-            // Add secondary canopy lumps for fuller look
-            int hash5 = (hash4 * 12345) % 2147483647;
-            int lump_count = 2 + (hash5 % 3); // 2-4 extra lumps
-            
-            for (int i = 0; i < lump_count; i++) {
-                int lump_hash = hash5 + i * 9876;
-                float lump_angle = ((float)(lump_hash % 360)) * Math_PI / 180.0f;
-                float lump_dist = 0.6f + ((float)((lump_hash >> 8) % 100) / 100.0f) * 0.5f;
-                float lump_height = 3.2f + ((float)((lump_hash >> 16) % 100) / 100.0f) * 1.2f;
-                
-                MeshInstance3D *lump = memnew(MeshInstance3D);
-                lump->set_mesh(decid_canopy_small);
-                lump->set_position(Vector3(
-                    cos(lump_angle) * lump_dist,
-                    lump_height,
-                    sin(lump_angle) * lump_dist
-                ));
-                lump->set_surface_override_material(0, decid_leaves_material);
-                tree->add_child(lump);
-            }
-        }
+        MeshInstance3D *trunk = memnew(MeshInstance3D);
+        trunk->set_mesh(trunk_mesh);
+        trunk->set_position(Vector3(0, 1.5f, 0));
+        trunk->set_surface_override_material(0, tree_trunk_material);
+        tree->add_child(trunk);
+        
+        MeshInstance3D *foliage = memnew(MeshInstance3D);
+        foliage->set_mesh(foliage_mesh);
+        foliage->set_position(Vector3(0, 5.0f, 0));
+        foliage->set_surface_override_material(0, pine_foliage_material);
+        tree->add_child(foliage);
         
         trees_container->add_child(tree);
         placed_trees.push_back(new_pos);
         trees_placed++;
     }
     
-    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees (", pine_count, " pine, ", decid_count, " deciduous)");
+    UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " fallback procedural trees");
 }
 
 Ref<ImageTexture> TerrainGenerator::load_texture_from_file(const String &path) {
     // Check if file exists
     if (!FileAccess::file_exists(path)) {
-        UtilityFunctions::print("TerrainGenerator: Texture file not found: ", path);
+        // Silent fail - texture is optional
         Ref<ImageTexture> empty;
         return empty;
     }
     
-    // Load image from file
+    // Use ResourceLoader to properly load imported textures (works with exports)
+    ResourceLoader *loader = ResourceLoader::get_singleton();
+    if (loader) {
+        Ref<Texture2D> tex = loader->load(path);
+        if (tex.is_valid()) {
+            // If it's already an ImageTexture, return it
+            Ref<ImageTexture> img_tex = tex;
+            if (img_tex.is_valid()) {
+                return img_tex;
+            }
+            // Otherwise get the image and create a new ImageTexture
+            Ref<Image> image = tex->get_image();
+            if (image.is_valid()) {
+                image->generate_mipmaps();
+                return ImageTexture::create_from_image(image);
+            }
+        }
+    }
+    
+    // Fallback: Load image directly (development only, won't work in exports)
     Ref<Image> image = Image::load_from_file(path);
     if (!image.is_valid()) {
-        UtilityFunctions::print("TerrainGenerator: Failed to load texture: ", path);
         Ref<ImageTexture> empty;
         return empty;
     }
@@ -2624,10 +2986,10 @@ void TerrainGenerator::generate_grass() {
     std::vector<Color> grass_colors;
     
     float half_world = (config.map_size * config.tile_size) * 0.5f;
-    float grass_spacing = 1.5f; // Space between grass clumps
-    int grass_per_clump = 5;    // Number of blades per clump
+    float grass_spacing = 2.5f; // Increased spacing for better performance (was 1.5f)
+    int grass_per_clump = 3;    // Reduced blades per clump for performance (was 5)
     
-    int max_grass = 50000; // Limit for performance
+    int max_grass = 20000; // Reduced limit for performance (was 50000)
     
     for (float z = -half_world + 5.0f; z < half_world - 5.0f && (int)grass_transforms.size() < max_grass; z += grass_spacing) {
         for (float x = -half_world + 5.0f; x < half_world - 5.0f && (int)grass_transforms.size() < max_grass; x += grass_spacing) {

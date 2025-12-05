@@ -66,6 +66,7 @@ private:
     godot::Sprite2D *drag_arrow_sprite = nullptr;
     godot::CanvasLayer *cursor_layer = nullptr;
     godot::Vector2 cursor_position = godot::Vector2(0, 0);
+    godot::Vector2 last_hover_cursor_position = godot::Vector2(-1, -1);  // Track cursor for hover optimization
     float cursor_speed = 800.0f;
     bool cursor_initialized = false;
     

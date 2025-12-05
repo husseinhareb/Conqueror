@@ -12,6 +12,7 @@
 #include "Unit.h"
 #include "Building.h"
 #include "CommandCenter.h"
+#include "Barracks.h"
 #include "Vehicle.h"
 #include "Bulldozer.h"
 #include "TerrainGenerator.h"
@@ -32,6 +33,7 @@ void initialize_rts_module(ModuleInitializationLevel p_level) {
     ClassDB::register_class<rts::Unit>();
     ClassDB::register_class<rts::Building>();
     ClassDB::register_class<rts::CommandCenter>();
+    ClassDB::register_class<rts::Barracks>();
     ClassDB::register_class<rts::Vehicle>();
     ClassDB::register_class<rts::Bulldozer>();
     ClassDB::register_class<rts::TerrainGenerator>();

@@ -94,10 +94,13 @@ void Building::_ready() {
     set_collision_mask(0);
     
     // Try to load custom model first, fall back to box mesh
-    if (!model_path.is_empty()) {
-        load_model();
-    } else {
-        create_building_mesh();
+    // Skip if subclass creates its own geometry (like Barracks)
+    if (!skip_default_mesh) {
+        if (!model_path.is_empty()) {
+            load_model();
+        } else {
+            create_building_mesh();
+        }
     }
     
     setup_collision();

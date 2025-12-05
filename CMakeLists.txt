@@ -51,6 +51,7 @@ set(RTS_SOURCES
     src/Unit.cpp
     src/Building.cpp
     src/CommandCenter.cpp
+    src/Barracks.cpp
     src/Vehicle.cpp
     src/Bulldozer.cpp
     src/FloorSnapper.cpp
@@ -67,6 +68,8 @@ set(RTS_HEADERS
     include/RTSCamera.h
     include/Unit.h
     include/Building.h
+    include/CommandCenter.h
+    include/Barracks.h
     include/Vehicle.h
     include/Bulldozer.h
     include/FloorSnapper.h
