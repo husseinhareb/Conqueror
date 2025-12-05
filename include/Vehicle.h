@@ -36,6 +36,7 @@ protected:
     float current_slope = 0.0f;             // Current terrain slope
     float terrain_height = 0.0f;            // Current terrain height
     float last_terrain_height = 0.0f;       // Previous frame terrain height
+    float max_traversable_slope = 0.7f;     // Max slope vehicle can climb (0-1, ~45 degrees)
     
     // Collision avoidance settings
     float avoidance_radius = 6.0f;        // How far ahead to look for obstacles
@@ -107,6 +108,10 @@ public:
     bool check_path_blocked(const godot::Vector3 &direction, float distance);
     void update_stuck_detection(double delta);
     void snap_to_terrain();
+    
+    // Terrain slope handling
+    float get_slope_ahead(const godot::Vector3 &direction, float check_distance);
+    bool can_traverse_slope(const godot::Vector3 &direction);
     
     // Selection
     void set_selected(bool selected);

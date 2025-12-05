@@ -90,6 +90,19 @@ void Vehicle::_ready() {
     // Physical collision prevents passing through any object
     set_collision_mask(1 | 2 | 4 | 8);
     
+    // Configure CharacterBody3D for proper slope handling
+    // Vehicles can climb slopes up to 45 degrees (less than infantry)
+    set_floor_max_angle(Math::deg_to_rad(45.0f));
+    // Ensure we snap to floor when driving
+    set_floor_snap_length(1.5f);
+    // Set up direction for floor detection
+    set_up_direction(Vector3(0, 1, 0));
+    // Allow sliding on walls/slopes
+    set_slide_on_ceiling_enabled(false);
+    // Don't stop on slopes, allow driving up/down
+    set_floor_stop_on_slope_enabled(false);
+    set_floor_block_on_wall_enabled(false);
+    
     target_position = get_global_position();
     last_position = get_global_position();
     
@@ -724,6 +737,38 @@ void Vehicle::snap_to_terrain() {
             }
         }
     }
+}
+
+float Vehicle::get_slope_ahead(const Vector3 &direction, float check_distance) {
+    // Check the terrain slope in the given direction
+    if (!cached_terrain_generator) return 0.0f;
+    
+    Vector3 current_pos = get_global_position();
+    Vector3 ahead_pos = current_pos + direction.normalized() * check_distance;
+    
+    // Get heights at both positions
+    Variant current_height = cached_terrain_generator->call("get_height_at", current_pos.x, current_pos.z);
+    Variant ahead_height = cached_terrain_generator->call("get_height_at", ahead_pos.x, ahead_pos.z);
+    
+    if ((current_height.get_type() == Variant::FLOAT || current_height.get_type() == Variant::INT) &&
+        (ahead_height.get_type() == Variant::FLOAT || ahead_height.get_type() == Variant::INT)) {
+        float h1 = (float)current_height;
+        float h2 = (float)ahead_height;
+        float height_diff = h2 - h1;
+        
+        // Calculate slope as rise/run (tangent of angle)
+        // Positive = uphill, negative = downhill
+        return height_diff / check_distance;
+    }
+    
+    return 0.0f;
+}
+
+bool Vehicle::can_traverse_slope(const Vector3 &direction) {
+    float slope = get_slope_ahead(direction, 3.0f);
+    // Check if slope is within traversable range
+    // slope is rise/run, so 1.0 = 45 degrees, 0.7 = ~35 degrees
+    return Math::abs(slope) <= max_traversable_slope;
 }
 
 } // namespace rts

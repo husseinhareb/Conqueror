@@ -130,18 +130,26 @@ void CommandCenter::create_command_center() {
     building_root->set_name("BuildingRoot");
     add_child(building_root);
     
-    // Build all components
+    // Build all components - massive military command complex
     create_foundation();
     create_main_building();
     create_garage_section();
+    create_vehicle_bay();
     create_control_tower();
     create_roof();
     create_garage_door();
     create_radar_system();
+    create_communications_array();
+    create_helipad();
+    create_power_generators();
+    create_fuel_depot();
+    create_perimeter_walls();
+    create_guard_posts();
+    create_landing_lights();
     create_details();
     create_windows();
     
-    UtilityFunctions::print("CommandCenter: Created all detailed components");
+    UtilityFunctions::print("CommandCenter: Created massive military headquarters complex");
 }
 
 void CommandCenter::create_materials() {

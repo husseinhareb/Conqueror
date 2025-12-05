@@ -24,12 +24,13 @@ class CommandCenter : public Building {
     GDCLASS(CommandCenter, Building)
 
 private:
-    // Building dimensions
-    static constexpr float BASE_WIDTH = 12.0f;
-    static constexpr float BASE_DEPTH = 10.0f;
-    static constexpr float BASE_HEIGHT = 5.0f;
-    static constexpr float GARAGE_HEIGHT = 3.5f;
-    static constexpr float RADAR_HEIGHT = 3.0f;
+    // Building dimensions - MUCH LARGER complex
+    static constexpr float BASE_WIDTH = 28.0f;    // Much wider
+    static constexpr float BASE_DEPTH = 24.0f;    // Much deeper
+    static constexpr float BASE_HEIGHT = 7.0f;    // Taller
+    static constexpr float GARAGE_HEIGHT = 5.0f;  // Bigger garage
+    static constexpr float RADAR_HEIGHT = 5.0f;   // Taller radar
+    static constexpr float TOWER_HEIGHT = 12.0f;  // Command tower
     
     // Component nodes
     godot::Node3D *building_root = nullptr;
@@ -67,6 +68,10 @@ private:
     godot::MeshInstance3D *satellite_dish = nullptr;
     godot::MeshInstance3D *flag_pole = nullptr;
     godot::MeshInstance3D *lights = nullptr;
+    godot::MeshInstance3D *helipad = nullptr;
+    godot::Node3D *comm_array = nullptr;
+    godot::Node3D *power_section = nullptr;
+    godot::Node3D *fuel_section = nullptr;
     
     // Materials
     godot::Ref<godot::StandardMaterial3D> main_material;
@@ -77,6 +82,11 @@ private:
     godot::Ref<godot::StandardMaterial3D> accent_material;
     godot::Ref<godot::StandardMaterial3D> radar_material;
     godot::Ref<godot::StandardMaterial3D> light_material;
+    godot::Ref<godot::StandardMaterial3D> concrete_material;
+    godot::Ref<godot::StandardMaterial3D> caution_material;
+    godot::Ref<godot::StandardMaterial3D> red_light_material;
+    godot::Ref<godot::StandardMaterial3D> green_light_material;
+    godot::Ref<godot::StandardMaterial3D> fuel_tank_material;
     
     // Bulldozer spawning
     godot::Vector3 spawn_point;
@@ -114,6 +124,14 @@ public:
     void create_details();
     void create_windows();
     void create_foundation();
+    void create_helipad();
+    void create_communications_array();
+    void create_power_generators();
+    void create_fuel_depot();
+    void create_perimeter_walls();
+    void create_guard_posts();
+    void create_landing_lights();
+    void create_vehicle_bay();
     
     // Mesh generation helpers
     godot::Ref<godot::ArrayMesh> create_box_mesh(float width, float height, float depth);
