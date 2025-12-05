@@ -188,8 +188,8 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     create_terrain_collision();
     create_water_plane();
     
-    // Setup shaders and materials
-    generate_procedural_textures();
+    // Load realistic PBR textures and setup shaders
+    load_terrain_textures();
     setup_terrain_shader();
     apply_terrain_material();
     
@@ -705,68 +705,86 @@ void TerrainGenerator::create_water_plane() {
             water_shader_mat.instantiate();
             water_shader_mat->set_shader(water_shader);
             
-            // Realistic water colors
-            water_shader_mat->set_shader_parameter("water_color_shallow", Color(0.1f, 0.35f, 0.5f));
-            water_shader_mat->set_shader_parameter("water_color_deep", Color(0.02f, 0.1f, 0.2f));
-            water_shader_mat->set_shader_parameter("water_color_fresnel", Color(0.12f, 0.3f, 0.42f));
+            // ================================================================
+            // PERFECT WATER COLORS - Natural lake appearance
+            // ================================================================
+            water_shader_mat->set_shader_parameter("water_color_shallow", Color(0.08f, 0.32f, 0.45f));
+            water_shader_mat->set_shader_parameter("water_color_deep", Color(0.015f, 0.08f, 0.15f));
+            water_shader_mat->set_shader_parameter("water_color_fresnel", Color(0.1f, 0.28f, 0.4f));
             
-            // Gerstner wave parameters - gentle lake waves
-            water_shader_mat->set_shader_parameter("wave_speed", 0.6f);
-            water_shader_mat->set_shader_parameter("wave_scale", 0.015f);
+            // ================================================================
+            // GERSTNER WAVES - Gentle, realistic lake waves
+            // ================================================================
+            water_shader_mat->set_shader_parameter("wave_speed", 0.4f);  // Slower for calm lake
+            water_shader_mat->set_shader_parameter("wave_scale", 0.012f);
             
-            // Wave 1 - Large gentle swell
-            water_shader_mat->set_shader_parameter("wave1_amplitude", 0.25f);
-            water_shader_mat->set_shader_parameter("wave1_frequency", 0.08f);
-            water_shader_mat->set_shader_parameter("wave1_steepness", 0.4f);
-            water_shader_mat->set_shader_parameter("wave1_direction", Vector2(1.0f, 0.2f));
+            // Wave 1 - Primary gentle swell (longest wavelength)
+            water_shader_mat->set_shader_parameter("wave1_amplitude", 0.18f);
+            water_shader_mat->set_shader_parameter("wave1_frequency", 0.06f);
+            water_shader_mat->set_shader_parameter("wave1_steepness", 0.35f);
+            water_shader_mat->set_shader_parameter("wave1_direction", Vector2(1.0f, 0.15f));
             
-            // Wave 2 - Medium waves
-            water_shader_mat->set_shader_parameter("wave2_amplitude", 0.15f);
-            water_shader_mat->set_shader_parameter("wave2_frequency", 0.15f);
-            water_shader_mat->set_shader_parameter("wave2_steepness", 0.35f);
-            water_shader_mat->set_shader_parameter("wave2_direction", Vector2(0.6f, 0.8f));
+            // Wave 2 - Secondary swell (different direction)
+            water_shader_mat->set_shader_parameter("wave2_amplitude", 0.12f);
+            water_shader_mat->set_shader_parameter("wave2_frequency", 0.11f);
+            water_shader_mat->set_shader_parameter("wave2_steepness", 0.3f);
+            water_shader_mat->set_shader_parameter("wave2_direction", Vector2(0.5f, 0.85f));
             
-            // Wave 3 - Small choppy waves
-            water_shader_mat->set_shader_parameter("wave3_amplitude", 0.08f);
-            water_shader_mat->set_shader_parameter("wave3_frequency", 0.3f);
-            water_shader_mat->set_shader_parameter("wave3_steepness", 0.3f);
-            water_shader_mat->set_shader_parameter("wave3_direction", Vector2(-0.3f, 0.95f));
+            // Wave 3 - Small chop
+            water_shader_mat->set_shader_parameter("wave3_amplitude", 0.06f);
+            water_shader_mat->set_shader_parameter("wave3_frequency", 0.25f);
+            water_shader_mat->set_shader_parameter("wave3_steepness", 0.25f);
+            water_shader_mat->set_shader_parameter("wave3_direction", Vector2(-0.35f, 0.92f));
             
-            // Wave 4 - Micro ripples
-            water_shader_mat->set_shader_parameter("wave4_amplitude", 0.04f);
-            water_shader_mat->set_shader_parameter("wave4_frequency", 0.6f);
-            water_shader_mat->set_shader_parameter("wave4_steepness", 0.2f);
-            water_shader_mat->set_shader_parameter("wave4_direction", Vector2(0.85f, -0.5f));
+            // Wave 4 - Micro ripples for detail
+            water_shader_mat->set_shader_parameter("wave4_amplitude", 0.03f);
+            water_shader_mat->set_shader_parameter("wave4_frequency", 0.5f);
+            water_shader_mat->set_shader_parameter("wave4_steepness", 0.18f);
+            water_shader_mat->set_shader_parameter("wave4_direction", Vector2(0.8f, -0.55f));
             
-            // Surface properties
-            water_shader_mat->set_shader_parameter("roughness", 0.04f);
-            water_shader_mat->set_shader_parameter("metallic", 0.1f);
-            water_shader_mat->set_shader_parameter("opacity", 0.96f);
+            // ================================================================
+            // SURFACE PROPERTIES - Crystal clear lake water
+            // ================================================================
+            water_shader_mat->set_shader_parameter("roughness", 0.02f);  // Very smooth
+            water_shader_mat->set_shader_parameter("metallic", 0.05f);
+            water_shader_mat->set_shader_parameter("opacity", 0.92f);  // Slightly transparent
             
-            // Fresnel
-            water_shader_mat->set_shader_parameter("fresnel_power", 4.5f);
-            water_shader_mat->set_shader_parameter("fresnel_bias", 0.03f);
+            // ================================================================
+            // FRESNEL - Natural viewing angle color shift
+            // ================================================================
+            water_shader_mat->set_shader_parameter("fresnel_power", 5.0f);
+            water_shader_mat->set_shader_parameter("fresnel_bias", 0.02f);
             
-            // Reflection
-            water_shader_mat->set_shader_parameter("reflection_strength", 0.75f);
-            water_shader_mat->set_shader_parameter("sky_color", Color(0.5f, 0.7f, 0.95f));
+            // ================================================================
+            // REFLECTION - Sky and environment reflection
+            // ================================================================
+            water_shader_mat->set_shader_parameter("reflection_strength", 0.85f);
+            water_shader_mat->set_shader_parameter("sky_color", Color(0.55f, 0.75f, 0.98f));
             
-            // Foam (subtle for lakes)
-            water_shader_mat->set_shader_parameter("foam_amount", 0.15f);
-            water_shader_mat->set_shader_parameter("foam_cutoff", 0.8f);
-            water_shader_mat->set_shader_parameter("foam_color", Color(0.95f, 0.98f, 1.0f));
+            // ================================================================
+            // FOAM - Very subtle for calm lake
+            // ================================================================
+            water_shader_mat->set_shader_parameter("foam_amount", 0.08f);
+            water_shader_mat->set_shader_parameter("foam_cutoff", 0.88f);
+            water_shader_mat->set_shader_parameter("foam_color", Color(0.97f, 0.99f, 1.0f));
             
-            // Subsurface scattering
-            water_shader_mat->set_shader_parameter("sss_strength", 0.35f);
-            water_shader_mat->set_shader_parameter("sss_color", Color(0.08f, 0.45f, 0.35f));
+            // ================================================================
+            // SUBSURFACE SCATTERING - Light through water
+            // ================================================================
+            water_shader_mat->set_shader_parameter("sss_strength", 0.45f);
+            water_shader_mat->set_shader_parameter("sss_color", Color(0.06f, 0.4f, 0.32f));
             
-            // Caustics
-            water_shader_mat->set_shader_parameter("caustic_strength", 0.12f);
-            water_shader_mat->set_shader_parameter("caustic_scale", 0.025f);
+            // ================================================================
+            // CAUSTICS - Light patterns on the bottom
+            // ================================================================
+            water_shader_mat->set_shader_parameter("caustic_strength", 0.18f);
+            water_shader_mat->set_shader_parameter("caustic_scale", 0.02f);
             
-            // Try to load water normal map textures if available
-            String normal1_path = "res://assets/textures/water_normal_1.png";
-            String normal2_path = "res://assets/textures/water_normal_2.png";
+            // ================================================================
+            // NORMAL MAPS - Surface detail
+            // ================================================================
+            String normal1_path = "res://assets/textures/terrain/water/water_normal_1.png";
+            String normal2_path = "res://assets/textures/terrain/water/water_normal_2.png";
             
             if (FileAccess::file_exists(normal1_path)) {
                 Ref<Texture2D> water_normal1 = loader->load(normal1_path);
@@ -784,10 +802,10 @@ void TerrainGenerator::create_water_plane() {
                 }
             }
             
-            water_shader_mat->set_shader_parameter("normal_map_scale", 0.04f);
-            water_shader_mat->set_shader_parameter("normal_map_strength", 0.5f);
+            water_shader_mat->set_shader_parameter("normal_map_scale", 0.03f);
+            water_shader_mat->set_shader_parameter("normal_map_strength", 0.6f);
             
-            UtilityFunctions::print("TerrainGenerator: Realistic Gerstner wave water shader loaded");
+            UtilityFunctions::print("TerrainGenerator: Perfect water shader configured");
         }
     }
     
@@ -795,159 +813,227 @@ void TerrainGenerator::create_water_plane() {
     Ref<StandardMaterial3D> water_mat_fallback;
     if (!water_shader_mat.is_valid()) {
         water_mat_fallback.instantiate();
-        water_mat_fallback->set_albedo(Color(0.05f, 0.15f, 0.25f, 0.95f));
+        water_mat_fallback->set_albedo(Color(0.05f, 0.18f, 0.28f, 0.9f));
         water_mat_fallback->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
         water_mat_fallback->set_roughness(0.02f);
-        water_mat_fallback->set_metallic(0.6f);
+        water_mat_fallback->set_metallic(0.5f);
         water_mat_fallback->set_cull_mode(StandardMaterial3D::CULL_DISABLED);
     }
     
-    // Create an irregular circular water mesh for each lake
+    // Create perfectly tessellated water mesh for each lake
     for (size_t i = 0; i < lake_positions.size(); i++) {
         const LakeData &lake = lake_positions[i];
         
-        // Generate irregular circular mesh
+        // Calculate optimal tessellation based on lake size
+        // Larger lakes need more vertices for smooth appearance
+        int base_segments = 128;  // High quality base
+        int base_rings = 48;      // Many concentric rings
+        
+        // Scale tessellation with lake radius (more for bigger lakes)
+        float size_factor = Math::clamp(lake.radius / 100.0f, 0.5f, 2.0f);
+        int segments = (int)(base_segments * size_factor);
+        int rings_count = (int)(base_rings * size_factor);
+        
+        // Generate ultra-high-quality water mesh
         Ref<ArrayMesh> lake_mesh_data = create_irregular_lake_mesh(
             lake.radius, 
-            64,  // Number of radial segments
-            24,  // Number of rings
+            segments,
+            rings_count,
             config.seed + (int)i * 1000
         );
         
         MeshInstance3D *lake_mesh = memnew(MeshInstance3D);
         lake_mesh->set_mesh(lake_mesh_data);
         
+        // Apply material to both surfaces (water surface and skirt)
         if (water_shader_mat.is_valid()) {
             lake_mesh->set_surface_override_material(0, water_shader_mat);
+            lake_mesh->set_surface_override_material(1, water_shader_mat);
         } else {
             lake_mesh->set_surface_override_material(0, water_mat_fallback);
+            lake_mesh->set_surface_override_material(1, water_mat_fallback);
         }
         
-        lake_mesh->set_position(Vector3(lake.world_x, lake.water_height + 0.05f, lake.world_z));
+        // Position water at perfect height
+        lake_mesh->set_position(Vector3(lake.world_x, lake.water_height + 0.12f, lake.world_z));
         lake_mesh->set_name(String("Lake_") + String::num_int64(i));
+        
+        // Enable shadows for realism
+        lake_mesh->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
         
         lakes_container->add_child(lake_mesh);
     }
     
-    UtilityFunctions::print("TerrainGenerator: Created ", lake_positions.size(), " irregular lake meshes");
+    UtilityFunctions::print("TerrainGenerator: Created ", lake_positions.size(), " perfect lake meshes");
 }
 
-// Creates an irregular circular mesh for natural-looking lake shapes
+// ============================================================================
+// PERFECT WATER MESH GENERATION
+// Creates an ultra-smooth, high-tessellation water surface with proper skirt
+// ============================================================================
 Ref<ArrayMesh> TerrainGenerator::create_irregular_lake_mesh(float radius, int radial_segments, int rings, int seed) {
-    // Generate irregular lake mesh with noise-based edge variation
-    PackedVector3Array vertices;
-    PackedVector3Array normals;
-    PackedVector2Array uvs;
-    PackedInt32Array indices;
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
     
-    // Reserve space
-    int total_vertices = 1 + radial_segments * rings; // center + rings
-    vertices.resize(total_vertices);
-    normals.resize(total_vertices);
-    uvs.resize(total_vertices);
+    // Ensure minimum quality for perfect appearance
+    int actual_segments = Math::max(radial_segments, 96);
+    int actual_rings = Math::max(rings, 40);
+    
+    // Slight radius expansion to ensure full coverage
+    float padded_radius = radius * 1.05f;
+    
+    // Pre-calculate all vertices for the smooth circular mesh
+    std::vector<std::vector<Vector3>> ring_vertices;
+    std::vector<std::vector<Vector2>> ring_uvs;
+    ring_vertices.resize(actual_rings + 1);
+    ring_uvs.resize(actual_rings + 1);
     
     // Center vertex
-    vertices[0] = Vector3(0, 0, 0);
-    normals[0] = Vector3(0, 1, 0);
-    uvs[0] = Vector2(0.5f, 0.5f);
+    ring_vertices[0].push_back(Vector3(0, 0, 0));
+    ring_uvs[0].push_back(Vector2(0.5f, 0.5f));
     
-    // Generate ring vertices with noise-based edge variation
-    int vertex_idx = 1;
-    for (int ring = 0; ring < rings; ring++) {
-        float ring_ratio = (float)(ring + 1) / (float)rings;
-        float base_ring_radius = radius * ring_ratio;
+    // Generate perfectly smooth circular rings
+    for (int ring = 1; ring <= actual_rings; ring++) {
+        float ring_ratio = (float)ring / (float)actual_rings;
+        float ring_radius = padded_radius * ring_ratio;
         
-        for (int seg = 0; seg < radial_segments; seg++) {
-            float angle = (float)seg / (float)radial_segments * Math_PI * 2.0f;
+        ring_vertices[ring].resize(actual_segments);
+        ring_uvs[ring].resize(actual_segments);
+        
+        for (int seg = 0; seg < actual_segments; seg++) {
+            float angle = (float)seg / (float)actual_segments * Math_PI * 2.0f;
             
-            // Add noise variation for outer rings (creates irregular shoreline)
-            float noise_strength = 0.0f;
-            if (ring >= rings - 4) {  // Only affect outer 4 rings
-                float outer_ratio = (float)(ring - (rings - 4)) / 4.0f;
-                noise_strength = 0.15f * outer_ratio;  // Up to 15% variation
-            }
+            float x = Math::cos(angle) * ring_radius;
+            float z = Math::sin(angle) * ring_radius;
             
-            // Multi-frequency noise for natural shoreline
-            float noise_x = Math::cos(angle) * 3.0f + seed * 0.1f;
-            float noise_z = Math::sin(angle) * 3.0f + seed * 0.1f;
-            float edge_noise = noise2d(noise_x, noise_z, seed);
-            edge_noise += 0.5f * noise2d(noise_x * 2.3f, noise_z * 2.3f, seed + 1);
-            edge_noise += 0.25f * noise2d(noise_x * 5.1f, noise_z * 5.1f, seed + 2);
-            edge_noise = (edge_noise / 1.75f) * 2.0f - 1.0f;  // Normalize to -1 to 1
+            ring_vertices[ring][seg] = Vector3(x, 0, z);
             
-            float radius_variation = 1.0f + edge_noise * noise_strength;
-            float final_radius = base_ring_radius * radius_variation;
-            
-            // For the outermost ring, add extra "bay" and "peninsula" features
-            if (ring == rings - 1) {
-                // Add larger features (bays and peninsulas)
-                float feature_noise = noise2d(noise_x * 0.5f, noise_z * 0.5f, seed + 3);
-                feature_noise = (feature_noise * 2.0f - 1.0f) * 0.2f;  // ±20% variation
-                final_radius *= (1.0f + feature_noise);
-            }
-            
-            float x = Math::cos(angle) * final_radius;
-            float z = Math::sin(angle) * final_radius;
-            
-            vertices[vertex_idx] = Vector3(x, 0, z);
-            normals[vertex_idx] = Vector3(0, 1, 0);
-            
-            // UV coordinates for texture mapping (circular mapping)
-            float u = 0.5f + Math::cos(angle) * ring_ratio * 0.5f;
-            float v = 0.5f + Math::sin(angle) * ring_ratio * 0.5f;
-            uvs[vertex_idx] = Vector2(u, v);
-            
-            vertex_idx++;
+            // World-space UVs for proper normal map tiling
+            float u = x / (padded_radius * 2.0f) + 0.5f;
+            float v = z / (padded_radius * 2.0f) + 0.5f;
+            ring_uvs[ring][seg] = Vector2(u, v);
         }
     }
     
-    // Generate triangles
-    // Inner fan (center to first ring)
-    for (int seg = 0; seg < radial_segments; seg++) {
-        int next_seg = (seg + 1) % radial_segments;
-        indices.push_back(0);  // Center
-        indices.push_back(1 + seg);
-        indices.push_back(1 + next_seg);
+    // All normals point straight up for flat water
+    Vector3 up_normal = Vector3(0, 1, 0);
+    
+    // Build inner fan triangles (center to first ring)
+    for (int seg = 0; seg < actual_segments; seg++) {
+        int next_seg = (seg + 1) % actual_segments;
+        
+        st->set_normal(up_normal);
+        st->set_uv(ring_uvs[0][0]);
+        st->add_vertex(ring_vertices[0][0]);
+        
+        st->set_normal(up_normal);
+        st->set_uv(ring_uvs[1][seg]);
+        st->add_vertex(ring_vertices[1][seg]);
+        
+        st->set_normal(up_normal);
+        st->set_uv(ring_uvs[1][next_seg]);
+        st->add_vertex(ring_vertices[1][next_seg]);
     }
     
-    // Ring strips
-    for (int ring = 0; ring < rings - 1; ring++) {
-        int ring_start = 1 + ring * radial_segments;
-        int next_ring_start = ring_start + radial_segments;
-        
-        for (int seg = 0; seg < radial_segments; seg++) {
-            int next_seg = (seg + 1) % radial_segments;
+    // Build ring strips (ring by ring outward)
+    for (int ring = 1; ring < actual_rings; ring++) {
+        for (int seg = 0; seg < actual_segments; seg++) {
+            int next_seg = (seg + 1) % actual_segments;
             
-            int v0 = ring_start + seg;
-            int v1 = ring_start + next_seg;
-            int v2 = next_ring_start + seg;
-            int v3 = next_ring_start + next_seg;
+            Vector3 v0 = ring_vertices[ring][seg];
+            Vector3 v1 = ring_vertices[ring][next_seg];
+            Vector3 v2 = ring_vertices[ring + 1][seg];
+            Vector3 v3 = ring_vertices[ring + 1][next_seg];
             
-            // Two triangles per quad
-            indices.push_back(v0);
-            indices.push_back(v2);
-            indices.push_back(v1);
+            Vector2 uv0 = ring_uvs[ring][seg];
+            Vector2 uv1 = ring_uvs[ring][next_seg];
+            Vector2 uv2 = ring_uvs[ring + 1][seg];
+            Vector2 uv3 = ring_uvs[ring + 1][next_seg];
             
-            indices.push_back(v1);
-            indices.push_back(v2);
-            indices.push_back(v3);
+            // Quad as two triangles
+            st->set_normal(up_normal);
+            st->set_uv(uv0);
+            st->add_vertex(v0);
+            st->set_normal(up_normal);
+            st->set_uv(uv2);
+            st->add_vertex(v2);
+            st->set_normal(up_normal);
+            st->set_uv(uv1);
+            st->add_vertex(v1);
+            
+            st->set_normal(up_normal);
+            st->set_uv(uv1);
+            st->add_vertex(v1);
+            st->set_normal(up_normal);
+            st->set_uv(uv2);
+            st->add_vertex(v2);
+            st->set_normal(up_normal);
+            st->set_uv(uv3);
+            st->add_vertex(v3);
         }
     }
     
-    // Create the mesh
-    Ref<ArrayMesh> mesh;
-    mesh.instantiate();
+    // Generate tangents for perfect normal mapping
+    st->generate_tangents();
     
-    Array arrays;
-    arrays.resize(Mesh::ARRAY_MAX);
-    arrays[Mesh::ARRAY_VERTEX] = vertices;
-    arrays[Mesh::ARRAY_NORMAL] = normals;
-    arrays[Mesh::ARRAY_TEX_UV] = uvs;
-    arrays[Mesh::ARRAY_INDEX] = indices;
+    Ref<ArrayMesh> water_mesh = st->commit();
     
-    mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+    // ========================================================================
+    // CREATE DEEP SKIRT - Hides all terrain/water intersection artifacts
+    // ========================================================================
+    float skirt_depth = 8.0f;  // Very deep to handle any terrain
     
-    return mesh;
+    Ref<SurfaceTool> skirt_st;
+    skirt_st.instantiate();
+    skirt_st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    int outer_ring = actual_rings;
+    
+    for (int seg = 0; seg < actual_segments; seg++) {
+        int next_seg = (seg + 1) % actual_segments;
+        
+        Vector3 top0 = ring_vertices[outer_ring][seg];
+        Vector3 top1 = ring_vertices[outer_ring][next_seg];
+        Vector3 bottom0 = Vector3(top0.x, top0.y - skirt_depth, top0.z);
+        Vector3 bottom1 = Vector3(top1.x, top1.y - skirt_depth, top1.z);
+        
+        // Outward-facing normal for proper skirt lighting
+        float angle = (float)seg / (float)actual_segments * Math_PI * 2.0f;
+        Vector3 outward = Vector3(Math::cos(angle), 0, Math::sin(angle));
+        
+        // UVs for skirt
+        Vector2 uv_top0 = ring_uvs[outer_ring][seg];
+        Vector2 uv_top1 = ring_uvs[outer_ring][next_seg];
+        Vector2 uv_bottom0 = Vector2(uv_top0.x, 1.0f);
+        Vector2 uv_bottom1 = Vector2(uv_top1.x, 1.0f);
+        
+        // Two triangles per skirt segment
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_top0);
+        skirt_st->add_vertex(top0);
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_bottom0);
+        skirt_st->add_vertex(bottom0);
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_top1);
+        skirt_st->add_vertex(top1);
+        
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_top1);
+        skirt_st->add_vertex(top1);
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_bottom0);
+        skirt_st->add_vertex(bottom0);
+        skirt_st->set_normal(outward);
+        skirt_st->set_uv(uv_bottom1);
+        skirt_st->add_vertex(bottom1);
+    }
+    
+    // Add skirt as second surface
+    skirt_st->commit(water_mesh);
+    
+    return water_mesh;
 }
 
 void TerrainGenerator::apply_terrain_material() {
@@ -1112,14 +1198,46 @@ Vector3 TerrainGenerator::get_world_center() const {
 }
 
 void TerrainGenerator::create_tree_mesh() {
-    // Create shared materials for all trees
+    // Create shared materials for all trees with realistic textures
     tree_trunk_material.instantiate();
-    tree_trunk_material->set_albedo(Color(0.4f, 0.25f, 0.15f)); // Brown trunk
+    
+    // Try to load bark texture
+    String bark_path = "res://assets/textures/vegetation/bark/bark_albedo.jpg";
+    if (FileAccess::file_exists(bark_path)) {
+        Ref<ImageTexture> bark_tex = load_texture_from_file(bark_path);
+        if (bark_tex.is_valid()) {
+            tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, bark_tex);
+        }
+        Ref<ImageTexture> bark_norm = load_texture_from_file("res://assets/textures/vegetation/bark/bark_normal.jpg");
+        if (bark_norm.is_valid()) {
+            tree_trunk_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, bark_norm);
+            tree_trunk_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        tree_trunk_material->set_albedo(Color(0.4f, 0.25f, 0.15f)); // Brown trunk fallback
+    }
     tree_trunk_material->set_roughness(0.9f);
+    tree_trunk_material->set_uv1_scale(Vector3(2.0f, 4.0f, 1.0f)); // Scale UVs for bark
     
     tree_leaves_material.instantiate();
-    tree_leaves_material->set_albedo(Color(0.15f, 0.45f, 0.12f)); // Dark green leaves
+    
+    // Try to load foliage texture
+    String foliage_path = "res://assets/textures/vegetation/foliage/foliage_albedo.jpg";
+    if (FileAccess::file_exists(foliage_path)) {
+        Ref<ImageTexture> foliage_tex = load_texture_from_file(foliage_path);
+        if (foliage_tex.is_valid()) {
+            tree_leaves_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, foliage_tex);
+        }
+        Ref<ImageTexture> foliage_norm = load_texture_from_file("res://assets/textures/vegetation/foliage/foliage_normal.jpg");
+        if (foliage_norm.is_valid()) {
+            tree_leaves_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, foliage_norm);
+            tree_leaves_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        tree_leaves_material->set_albedo(Color(0.15f, 0.45f, 0.12f)); // Dark green leaves fallback
+    }
     tree_leaves_material->set_roughness(0.8f);
+    tree_leaves_material->set_uv1_scale(Vector3(2.0f, 2.0f, 1.0f));
 }
 
 bool TerrainGenerator::is_valid_tree_position(float x, float z) const {
@@ -1296,31 +1414,77 @@ void TerrainGenerator::generate_mountain_rocks() {
     rocks_container->set_name("MountainRocks");
     add_child(rocks_container);
     
-    // Create rock materials
+    // Load rock textures for enhanced materials
+    Ref<ImageTexture> rock_albedo_tex = load_texture_from_file("res://assets/textures/terrain/rock/rock_albedo.jpg");
+    Ref<ImageTexture> rock_normal_tex = load_texture_from_file("res://assets/textures/terrain/rock/rock_normal.jpg");
+    Ref<ImageTexture> moss_albedo_tex = load_texture_from_file("res://assets/textures/terrain/moss/moss_albedo.jpg");
+    Ref<ImageTexture> moss_normal_tex = load_texture_from_file("res://assets/textures/terrain/moss/moss_normal.jpg");
+    Ref<ImageTexture> snow_albedo_tex = load_texture_from_file("res://assets/textures/terrain/snow/snow_albedo.jpg");
+    Ref<ImageTexture> snow_normal_tex = load_texture_from_file("res://assets/textures/terrain/snow/snow_normal.jpg");
+    
+    // Create rock materials with textures
     // Gray granite-like rock
     rock_material_gray.instantiate();
-    rock_material_gray->set_albedo(Color(0.55f, 0.53f, 0.5f));
+    if (rock_albedo_tex.is_valid()) {
+        rock_material_gray->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, rock_albedo_tex);
+        if (rock_normal_tex.is_valid()) {
+            rock_material_gray->set_texture(StandardMaterial3D::TEXTURE_NORMAL, rock_normal_tex);
+            rock_material_gray->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        rock_material_gray->set_albedo(Color(0.55f, 0.53f, 0.5f));
+    }
     rock_material_gray->set_roughness(0.85f);
     rock_material_gray->set_metallic(0.05f);
+    rock_material_gray->set_uv1_scale(Vector3(0.5f, 0.5f, 0.5f));
     
-    // Darker rock for contrast
+    // Darker rock for contrast (uses same texture with tint)
     rock_material_dark.instantiate();
-    rock_material_dark->set_albedo(Color(0.35f, 0.33f, 0.3f));
+    if (rock_albedo_tex.is_valid()) {
+        rock_material_dark->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, rock_albedo_tex);
+        if (rock_normal_tex.is_valid()) {
+            rock_material_dark->set_texture(StandardMaterial3D::TEXTURE_NORMAL, rock_normal_tex);
+            rock_material_dark->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+        // Darken the rock by applying a dark modulate
+        rock_material_dark->set_albedo(Color(0.6f, 0.58f, 0.55f));
+    } else {
+        rock_material_dark->set_albedo(Color(0.35f, 0.33f, 0.3f));
+    }
     rock_material_dark->set_roughness(0.9f);
     rock_material_dark->set_metallic(0.02f);
+    rock_material_dark->set_uv1_scale(Vector3(0.5f, 0.5f, 0.5f));
     
     // Mossy rock for lower elevations
     rock_material_mossy.instantiate();
-    rock_material_mossy->set_albedo(Color(0.4f, 0.45f, 0.35f));
+    if (moss_albedo_tex.is_valid()) {
+        rock_material_mossy->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, moss_albedo_tex);
+        if (moss_normal_tex.is_valid()) {
+            rock_material_mossy->set_texture(StandardMaterial3D::TEXTURE_NORMAL, moss_normal_tex);
+            rock_material_mossy->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        rock_material_mossy->set_albedo(Color(0.4f, 0.45f, 0.35f));
+    }
     rock_material_mossy->set_roughness(0.88f);
     rock_material_mossy->set_metallic(0.0f);
+    rock_material_mossy->set_uv1_scale(Vector3(0.8f, 0.8f, 0.8f));
     
     // Snow-covered rock for high elevations
     snow_rock_material.instantiate();
-    snow_rock_material->set_albedo(Color(0.92f, 0.94f, 0.96f));
+    if (snow_albedo_tex.is_valid()) {
+        snow_rock_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, snow_albedo_tex);
+        if (snow_normal_tex.is_valid()) {
+            snow_rock_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, snow_normal_tex);
+            snow_rock_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        snow_rock_material->set_albedo(Color(0.92f, 0.94f, 0.96f));
+    }
     snow_rock_material->set_roughness(0.7f);
     snow_rock_material->set_metallic(0.0f);
     snow_rock_material->set_specular(0.6f);
+    snow_rock_material->set_uv1_scale(Vector3(0.6f, 0.6f, 0.6f));
     
     float half_world = (config.map_size * config.tile_size) * 0.5f;
     
@@ -1615,14 +1779,29 @@ void TerrainGenerator::generate_snow_caps() {
     snow_container->set_name("SnowCaps");
     add_child(snow_container);
     
-    // Create snow material - bright white with subtle blue tint
+    // Create snow material with realistic texture
     snow_material.instantiate();
-    snow_material->set_albedo(Color(0.95f, 0.97f, 1.0f)); // Slightly blue-white
+    
+    // Try to load snow texture
+    Ref<ImageTexture> snow_tex = load_texture_from_file("res://assets/textures/terrain/snow/snow_albedo.jpg");
+    Ref<ImageTexture> snow_norm = load_texture_from_file("res://assets/textures/terrain/snow/snow_normal.jpg");
+    
+    if (snow_tex.is_valid()) {
+        snow_material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, snow_tex);
+        if (snow_norm.is_valid()) {
+            snow_material->set_texture(StandardMaterial3D::TEXTURE_NORMAL, snow_norm);
+            snow_material->set_feature(StandardMaterial3D::FEATURE_NORMAL_MAPPING, true);
+        }
+    } else {
+        snow_material->set_albedo(Color(0.95f, 0.97f, 1.0f)); // Fallback slightly blue-white
+    }
+    
     snow_material->set_roughness(0.85f); // Matte snow surface
     snow_material->set_metallic(0.0f);
     snow_material->set_specular(0.3f);
+    snow_material->set_uv1_scale(Vector3(0.3f, 0.3f, 0.3f)); // Scale for snow patches
     // Add subtle emission for that bright snow look
-    snow_material->set_emission(Color(0.1f, 0.1f, 0.12f));
+    snow_material->set_emission(Color(0.05f, 0.05f, 0.07f));
     snow_material->set_emission_energy_multiplier(0.1f);
     
     int size = config.map_size;
@@ -1972,10 +2151,91 @@ void TerrainGenerator::generate_trees() {
     UtilityFunctions::print("TerrainGenerator: Placed ", trees_placed, " trees (", pine_count, " pine, ", decid_count, " deciduous)");
 }
 
-void TerrainGenerator::generate_procedural_textures() {
-    UtilityFunctions::print("TerrainGenerator: Generating procedural textures...");
+Ref<ImageTexture> TerrainGenerator::load_texture_from_file(const String &path) {
+    // Check if file exists
+    if (!FileAccess::file_exists(path)) {
+        UtilityFunctions::print("TerrainGenerator: Texture file not found: ", path);
+        Ref<ImageTexture> empty;
+        return empty;
+    }
     
-    // Create noise-based textures for terrain
+    // Load image from file
+    Ref<Image> image = Image::load_from_file(path);
+    if (!image.is_valid()) {
+        UtilityFunctions::print("TerrainGenerator: Failed to load texture: ", path);
+        Ref<ImageTexture> empty;
+        return empty;
+    }
+    
+    // Generate mipmaps for better quality at distance
+    image->generate_mipmaps();
+    
+    // Create texture from image
+    Ref<ImageTexture> texture = ImageTexture::create_from_image(image);
+    return texture;
+}
+
+void TerrainGenerator::load_terrain_textures() {
+    UtilityFunctions::print("TerrainGenerator: Loading realistic terrain textures...");
+    
+    String base_path = "res://assets/textures/terrain/";
+    
+    // Load grass textures
+    String grass_path = base_path + "grass/";
+    grass_texture = load_texture_from_file(grass_path + "grass_albedo.jpg");
+    grass_normal_texture = load_texture_from_file(grass_path + "grass_normal.jpg");
+    grass_roughness_texture = load_texture_from_file(grass_path + "grass_roughness.jpg");
+    grass_ao_texture = load_texture_from_file(grass_path + "grass_ao.jpg");
+    
+    // Load sand textures
+    String sand_path = base_path + "sand/";
+    sand_texture = load_texture_from_file(sand_path + "sand_albedo.jpg");
+    sand_normal_texture = load_texture_from_file(sand_path + "sand_normal.jpg");
+    sand_roughness_texture = load_texture_from_file(sand_path + "sand_roughness.jpg");
+    sand_ao_texture = load_texture_from_file(sand_path + "sand_ao.jpg");
+    
+    // Load dirt textures
+    String dirt_path = base_path + "dirt/";
+    dirt_texture = load_texture_from_file(dirt_path + "dirt_albedo.jpg");
+    dirt_normal_texture = load_texture_from_file(dirt_path + "dirt_normal.jpg");
+    dirt_roughness_texture = load_texture_from_file(dirt_path + "dirt_roughness.jpg");
+    dirt_ao_texture = load_texture_from_file(dirt_path + "dirt_ao.jpg");
+    
+    // Load rock textures
+    String rock_path = base_path + "rock/";
+    rock_texture = load_texture_from_file(rock_path + "rock_albedo.jpg");
+    rock_normal_texture = load_texture_from_file(rock_path + "rock_normal.jpg");
+    rock_roughness_texture = load_texture_from_file(rock_path + "rock_roughness.jpg");
+    rock_ao_texture = load_texture_from_file(rock_path + "rock_ao.jpg");
+    
+    // Load snow textures
+    String snow_path = base_path + "snow/";
+    snow_texture = load_texture_from_file(snow_path + "snow_albedo.jpg");
+    snow_normal_texture = load_texture_from_file(snow_path + "snow_normal.jpg");
+    snow_roughness_texture = load_texture_from_file(snow_path + "snow_roughness.jpg");
+    snow_ao_texture = load_texture_from_file(snow_path + "snow_ao.jpg");
+    
+    // Count loaded textures
+    int loaded = 0;
+    if (grass_texture.is_valid()) loaded++;
+    if (sand_texture.is_valid()) loaded++;
+    if (dirt_texture.is_valid()) loaded++;
+    if (rock_texture.is_valid()) loaded++;
+    if (snow_texture.is_valid()) loaded++;
+    
+    UtilityFunctions::print("TerrainGenerator: Loaded ", loaded, "/5 terrain texture sets");
+    
+    // Fall back to procedural textures if files not found
+    if (loaded == 0) {
+        UtilityFunctions::print("TerrainGenerator: No textures found, generating procedural fallback...");
+        generate_procedural_textures();
+    }
+}
+
+void TerrainGenerator::generate_procedural_textures() {
+    UtilityFunctions::print("TerrainGenerator: Generating procedural fallback textures...");
+    
+    // Create noise-based textures for terrain (fallback if real textures not found)
     int tex_size = 512;
     
     // Grass texture - vibrant greens
@@ -2093,7 +2353,7 @@ Ref<ImageTexture> TerrainGenerator::create_normal_from_height(Ref<ImageTexture> 
 }
 
 void TerrainGenerator::setup_terrain_shader() {
-    UtilityFunctions::print("TerrainGenerator: Setting up terrain shader...");
+    UtilityFunctions::print("TerrainGenerator: Setting up terrain shader with PBR textures...");
     
     // Check if shader file exists
     String shader_path = "res://shaders/terrain.gdshader";
@@ -2119,17 +2379,39 @@ void TerrainGenerator::setup_terrain_shader() {
     terrain_shader_material.instantiate();
     terrain_shader_material->set_shader(terrain_shader);
     
-    // Set shader parameters
-    float world_size = config.map_size * config.tile_size;
-    terrain_shader_material->set_shader_parameter("terrain_size", world_size);
-    terrain_shader_material->set_shader_parameter("uv_scale", 0.05f);
-    terrain_shader_material->set_shader_parameter("blend_sharpness", 4.0f);
-    terrain_shader_material->set_shader_parameter("grass_height_max", 8.0f);
-    terrain_shader_material->set_shader_parameter("sand_height_max", 4.0f);
-    terrain_shader_material->set_shader_parameter("rock_slope_min", 0.6f);
-    terrain_shader_material->set_shader_parameter("water_level", config.water_level);
+    // Set shader parameters - Texture settings
+    terrain_shader_material->set_shader_parameter("texture_scale", 0.05f);
+    terrain_shader_material->set_shader_parameter("normal_strength", 1.2f);
+    terrain_shader_material->set_shader_parameter("ao_intensity", 0.6f);
     
-    // Set textures if available
+    // Set shader parameters - Height blending thresholds
+    terrain_shader_material->set_shader_parameter("water_level", config.water_level);
+    terrain_shader_material->set_shader_parameter("sand_height_max", config.water_level + 2.0f);
+    terrain_shader_material->set_shader_parameter("grass_height_max", 10.0f);
+    terrain_shader_material->set_shader_parameter("rock_height_min", 8.0f);
+    terrain_shader_material->set_shader_parameter("snow_height_min", config.snow_start_height);
+    terrain_shader_material->set_shader_parameter("snow_height_full", config.snow_full_height);
+    terrain_shader_material->set_shader_parameter("rock_slope_threshold", 0.5f);
+    terrain_shader_material->set_shader_parameter("blend_sharpness", 6.0f);
+    terrain_shader_material->set_shader_parameter("height_noise_scale", 0.25f);
+    
+    // Set shader parameters - Color adjustments  
+    terrain_shader_material->set_shader_parameter("grass_tint", Vector3(0.9f, 1.0f, 0.85f));
+    terrain_shader_material->set_shader_parameter("sand_tint", Vector3(1.0f, 0.95f, 0.85f));
+    terrain_shader_material->set_shader_parameter("dirt_tint", Vector3(0.95f, 0.9f, 0.85f));
+    terrain_shader_material->set_shader_parameter("rock_tint", Vector3(0.9f, 0.9f, 0.92f));
+    terrain_shader_material->set_shader_parameter("snow_tint", Vector3(0.95f, 0.97f, 1.0f));
+    terrain_shader_material->set_shader_parameter("saturation", 1.1f);
+    terrain_shader_material->set_shader_parameter("brightness", 1.0f);
+    
+    // Set shader parameters - Material properties
+    terrain_shader_material->set_shader_parameter("base_roughness", 0.6f);
+    terrain_shader_material->set_shader_parameter("metallic", 0.0f);
+    terrain_shader_material->set_shader_parameter("specular", 0.5f);
+    
+    // ============================================================
+    // Set all albedo textures
+    // ============================================================
     if (grass_texture.is_valid()) {
         terrain_shader_material->set_shader_parameter("grass_albedo", grass_texture);
     }
@@ -2142,8 +2424,13 @@ void TerrainGenerator::setup_terrain_shader() {
     if (rock_texture.is_valid()) {
         terrain_shader_material->set_shader_parameter("rock_albedo", rock_texture);
     }
+    if (snow_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("snow_albedo", snow_texture);
+    }
     
-    // Set normal maps if available
+    // ============================================================
+    // Set all normal maps
+    // ============================================================
     if (grass_normal_texture.is_valid()) {
         terrain_shader_material->set_shader_parameter("grass_normal", grass_normal_texture);
     }
@@ -2156,8 +2443,49 @@ void TerrainGenerator::setup_terrain_shader() {
     if (rock_normal_texture.is_valid()) {
         terrain_shader_material->set_shader_parameter("rock_normal", rock_normal_texture);
     }
+    if (snow_normal_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("snow_normal", snow_normal_texture);
+    }
     
-    UtilityFunctions::print("TerrainGenerator: Terrain shader setup complete");
+    // ============================================================
+    // Set all roughness maps
+    // ============================================================
+    if (grass_roughness_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("grass_roughness_tex", grass_roughness_texture);
+    }
+    if (sand_roughness_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("sand_roughness_tex", sand_roughness_texture);
+    }
+    if (dirt_roughness_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("dirt_roughness_tex", dirt_roughness_texture);
+    }
+    if (rock_roughness_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("rock_roughness_tex", rock_roughness_texture);
+    }
+    if (snow_roughness_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("snow_roughness_tex", snow_roughness_texture);
+    }
+    
+    // ============================================================
+    // Set all ambient occlusion maps
+    // ============================================================
+    if (grass_ao_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("grass_ao_tex", grass_ao_texture);
+    }
+    if (sand_ao_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("sand_ao_tex", sand_ao_texture);
+    }
+    if (dirt_ao_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("dirt_ao_tex", dirt_ao_texture);
+    }
+    if (rock_ao_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("rock_ao_tex", rock_ao_texture);
+    }
+    if (snow_ao_texture.is_valid()) {
+        terrain_shader_material->set_shader_parameter("snow_ao_tex", snow_ao_texture);
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Terrain PBR shader setup complete");
 }
 
 Ref<ArrayMesh> TerrainGenerator::create_grass_blade_mesh() {

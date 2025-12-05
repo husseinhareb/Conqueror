@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://h08y008h1h46"
-path="res://.godot/imported/water_normal_1.png-832690d4f8e4c7dd866d099e02a1864c.ctex"
+uid="uid://baitgiolun7xb"
+path="res://.godot/imported/bark_albedo.jpg-8977c7948196ffdc5cb280d11607ab5c.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/textures/water_normal_1.png"
-dest_files=["res://.godot/imported/water_normal_1.png-832690d4f8e4c7dd866d099e02a1864c.ctex"]
+source_file="res://assets/textures/vegetation/bark/bark_albedo.jpg"
+dest_files=["res://.godot/imported/bark_albedo.jpg-8977c7948196ffdc5cb280d11607ab5c.ctex"]
 
 [params]
 

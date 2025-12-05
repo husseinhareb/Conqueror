@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c8qdq7xjpa6a8"
-path="res://.godot/imported/water_normal_2.png-9f8f74b1d38925597419a6ab7cc7d6bb.ctex"
+uid="uid://dx30u3t0lad4l"
+path="res://.godot/imported/snow_ao.jpg-96447243894908e588938c6a30b840b3.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/textures/water_normal_2.png"
-dest_files=["res://.godot/imported/water_normal_2.png-9f8f74b1d38925597419a6ab7cc7d6bb.ctex"]
+source_file="res://assets/textures/terrain/snow/snow_ao.jpg"
+dest_files=["res://.godot/imported/snow_ao.jpg-96447243894908e588938c6a30b840b3.ctex"]
 
 [params]
 

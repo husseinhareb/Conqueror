@@ -169,15 +169,27 @@ private:
     godot::Ref<godot::ImageTexture> normalmap_texture;
     godot::Ref<godot::ImageTexture> splatmap_texture;
     
-    // Procedural textures
+    // Procedural textures (now loaded from files)
     godot::Ref<godot::ImageTexture> grass_texture;
     godot::Ref<godot::ImageTexture> grass_normal_texture;
+    godot::Ref<godot::ImageTexture> grass_roughness_texture;
+    godot::Ref<godot::ImageTexture> grass_ao_texture;
     godot::Ref<godot::ImageTexture> sand_texture;
     godot::Ref<godot::ImageTexture> sand_normal_texture;
+    godot::Ref<godot::ImageTexture> sand_roughness_texture;
+    godot::Ref<godot::ImageTexture> sand_ao_texture;
     godot::Ref<godot::ImageTexture> dirt_texture;
     godot::Ref<godot::ImageTexture> dirt_normal_texture;
+    godot::Ref<godot::ImageTexture> dirt_roughness_texture;
+    godot::Ref<godot::ImageTexture> dirt_ao_texture;
     godot::Ref<godot::ImageTexture> rock_texture;
     godot::Ref<godot::ImageTexture> rock_normal_texture;
+    godot::Ref<godot::ImageTexture> rock_roughness_texture;
+    godot::Ref<godot::ImageTexture> rock_ao_texture;
+    godot::Ref<godot::ImageTexture> snow_texture;
+    godot::Ref<godot::ImageTexture> snow_normal_texture;
+    godot::Ref<godot::ImageTexture> snow_roughness_texture;
+    godot::Ref<godot::ImageTexture> snow_ao_texture;
     
     // Noise generation helpers
     float noise2d(float x, float y, int seed);
@@ -219,7 +231,9 @@ private:
     godot::Ref<godot::ArrayMesh> create_grass_blade_mesh();
     bool is_valid_grass_position(float x, float z) const;
     
-    // Texture generation
+    // Texture loading and generation
+    void load_terrain_textures();
+    godot::Ref<godot::ImageTexture> load_texture_from_file(const godot::String &path);
     void generate_procedural_textures();
     godot::Ref<godot::ImageTexture> create_noise_texture(int size, godot::Color base_color, godot::Color variation_color, float frequency, int seed);
     godot::Ref<godot::ImageTexture> create_normal_from_height(godot::Ref<godot::ImageTexture> height_tex, float strength);
