@@ -42,10 +42,10 @@ shadow_enabled = true
 [node name="TerrainGenerator" type="TerrainGenerator" parent="."]
 map_size = 512
 tile_size = 2.0
-max_height = 25.0
+max_height = 45.0
 water_level = 1.0
 seed = 42
-mountain_frequency = 0.004
+mountain_frequency = 0.003
 lake_count = 5
 
 [node name="RTSCamera" type="RTSCamera" parent="."]

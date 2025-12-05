@@ -55,18 +55,18 @@ struct TerrainConfig {
     float tile_size = 1.0f;          // World units per tile
     
     // Height settings
-    float max_height = 15.0f;        // Maximum terrain height
+    float max_height = 35.0f;        // Maximum terrain height (increased for tall mountains)
     float water_level = -2.0f;       // Water surface height (below ground!)
-    float snow_level = 14.0f;        // Height where snow starts
+    float snow_level = 14.0f;        // Height where snow starts (legacy)
     float ground_level = 1.0f;       // Base ground level (well above water)
     
     // Noise settings for terrain shape
     float base_frequency = 0.01f;    // Base noise frequency (lower = smoother)
-    float mountain_frequency = 0.006f; // Mountain noise frequency
+    float mountain_frequency = 0.004f; // Mountain noise frequency (lower for larger mountain ranges)
     float detail_frequency = 0.1f;   // Fine detail frequency
     
-    float base_amplitude = 0.3f;     // Base terrain contribution (more variation)
-    float mountain_amplitude = 0.6f; // Mountain contribution
+    float base_amplitude = 0.25f;    // Base terrain contribution
+    float mountain_amplitude = 1.0f; // Mountain contribution (high for dramatic peaks)
     float detail_amplitude = 0.05f;  // Detail contribution
     
     int octaves = 4;                 // Noise octaves for detail
@@ -74,11 +74,19 @@ struct TerrainConfig {
     float lacunarity = 2.0f;         // Octave frequency increase
     
     // Feature settings
-    float mountain_threshold = 0.55f; // Height threshold for mountains (lower = more mountains)
+    float mountain_threshold = 0.45f; // Height threshold for mountains (lowered for more mountains)
     float lake_threshold = 0.25f;    // Height threshold for lakes
     int lake_count = 4;              // Number of lakes to carve
     float lake_size = 40.0f;         // Average lake radius (large natural lakes)
     float lake_max_size = 80.0f;     // Maximum lake size
+    
+    // Rock and snow settings
+    int rock_count = 1500;           // Number of rocks to spawn
+    float rock_min_height = 5.0f;    // Minimum terrain height for rocks
+    float rock_max_slope = 0.75f;    // Maximum slope for rock placement
+    float rock_min_spacing = 2.0f;   // Minimum distance between rocks
+    float snow_start_height = 12.0f; // Height where snow starts appearing
+    float snow_full_height = 18.0f;  // Height where terrain is fully snow covered
     
     // Tree settings
     int tree_count = 2000;           // Number of trees to spawn
@@ -128,6 +136,17 @@ private:
     godot::Ref<godot::ArrayMesh> tree_mesh;
     godot::Ref<godot::StandardMaterial3D> tree_trunk_material;
     godot::Ref<godot::StandardMaterial3D> tree_leaves_material;
+    
+    // Rock meshes and materials
+    godot::Node3D *rocks_container = nullptr;
+    godot::Ref<godot::StandardMaterial3D> rock_material_gray;
+    godot::Ref<godot::StandardMaterial3D> rock_material_dark;
+    godot::Ref<godot::StandardMaterial3D> rock_material_mossy;
+    godot::Ref<godot::StandardMaterial3D> snow_rock_material;
+    
+    // Snow cap system
+    godot::Node3D *snow_container = nullptr;
+    godot::Ref<godot::StandardMaterial3D> snow_material;
     
     // Grass system
     godot::MultiMeshInstance3D *grass_instance = nullptr;
@@ -183,6 +202,17 @@ private:
     void generate_trees();
     void create_tree_mesh();
     bool is_valid_tree_position(float x, float z) const;
+    
+    // Rock and mountain decoration
+    void generate_mountain_rocks();
+    godot::Ref<godot::ArrayMesh> create_rock_mesh(float size, int detail_level, int seed);
+    bool is_valid_rock_position(float x, float z) const;
+    bool is_mountain_area(float x, float z) const;
+    float get_snow_coverage(float height, float slope) const;
+    
+    // Snow cap generation
+    void generate_snow_caps();
+    godot::Ref<godot::ArrayMesh> create_snow_patch_mesh(float x, float z, float radius, int segments);
     
     // Grass system
     void generate_grass();

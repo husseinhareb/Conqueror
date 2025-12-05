@@ -193,8 +193,10 @@ void TerrainGenerator::generate_terrain_with_seed(int seed) {
     setup_terrain_shader();
     apply_terrain_material();
     
-    // Generate vegetation
+    // Generate vegetation and rocks
     generate_trees();
+    generate_mountain_rocks();
+    generate_snow_caps();
     generate_grass();
     
     // Setup environment (fog, lighting, sky)
@@ -219,6 +221,14 @@ void TerrainGenerator::clear_terrain() {
     if (trees_container) {
         trees_container->queue_free();
         trees_container = nullptr;
+    }
+    if (rocks_container) {
+        rocks_container->queue_free();
+        rocks_container = nullptr;
+    }
+    if (snow_container) {
+        snow_container->queue_free();
+        snow_container = nullptr;
     }
     if (lakes_container) {
         lakes_container->queue_free();
@@ -537,9 +547,25 @@ void TerrainGenerator::create_terrain_mesh() {
             // Calculate normal using world coordinates (wx, wz are already world coords)
             Vector3 normal = get_normal_at(wx, wz);
             
-            // Color based on height (for basic visualization)
-            // Heights typically range from ~0.5 to ~7, so use appropriate thresholds
+            // Color based on height and slope (for basic visualization)
+            // Heights typically range from ~0.5 to ~20+, with snow at high elevations
             Color color;
+            float slope = 1.0f - normal.y;
+            
+            // Calculate snow coverage for this vertex
+            float snow_factor = 0.0f;
+            if (height >= config.snow_start_height) {
+                if (height >= config.snow_full_height) {
+                    // Full snow at peak, less on steep slopes
+                    snow_factor = 1.0f - Math::clamp(slope * 0.4f, 0.0f, 0.3f);
+                } else {
+                    // Gradual snow transition
+                    float height_blend = (height - config.snow_start_height) / (config.snow_full_height - config.snow_start_height);
+                    float slope_reduction = Math::clamp(slope * 1.2f, 0.0f, 0.6f);
+                    snow_factor = height_blend * (1.0f - slope_reduction);
+                }
+            }
+            
             if (height <= config.water_level) {
                 color = Color(0.15f, 0.4f, 0.7f); // Deep water blue
             } else if (height < 1.5f) {
@@ -552,17 +578,36 @@ void TerrainGenerator::create_terrain_mesh() {
                 // Medium grass - lush green
                 color = Color(0.15f, 0.6f, 0.1f);
             } else if (height < 7.0f) {
-                // High grass - rich green
-                color = Color(0.2f, 0.55f, 0.15f);
+                // High grass - rich green transitioning to rock
+                float rock_blend = (height - 5.0f) / 2.0f;
+                color = Color(0.2f, 0.55f, 0.15f).lerp(Color(0.45f, 0.42f, 0.38f), rock_blend * slope);
             } else if (height < 10.0f) {
-                // Rocky dirt - warmer brown
-                color = Color(0.55f, 0.45f, 0.3f);
-            } else if (height < 14.0f) {
-                // Mountain rock
-                color = Color(0.5f, 0.5f, 0.5f);
+                // Rocky transition zone - brown/gray mix
+                float rock_blend = (height - 7.0f) / 3.0f;
+                Color dirt = Color(0.55f, 0.45f, 0.3f);
+                Color rock = Color(0.5f, 0.48f, 0.45f);
+                color = dirt.lerp(rock, rock_blend + slope * 0.3f);
+            } else if (height < config.snow_start_height) {
+                // Mountain rock zone
+                float rock_variation = noise2d(wx * 0.1f, wz * 0.1f, config.seed + 999);
+                Color rock_base = Color(0.5f, 0.5f, 0.5f);
+                Color rock_dark = Color(0.38f, 0.36f, 0.34f);
+                color = rock_base.lerp(rock_dark, (rock_variation + 1.0f) * 0.25f + slope * 0.2f);
             } else {
-                // Snow peaks
-                color = Color(0.95f, 0.95f, 0.95f);
+                // Snow zone - already calculated snow_factor above
+                Color rock = Color(0.48f, 0.47f, 0.46f);
+                Color snow = Color(0.95f, 0.96f, 0.98f);
+                color = rock.lerp(snow, snow_factor);
+            }
+            
+            // Apply snow blending for high elevations even if below snow line
+            if (snow_factor > 0.0f && height < config.snow_start_height + 2.0f) {
+                // Patchy snow near snow line
+                float noise_val = noise2d(wx * 0.2f, wz * 0.2f, config.seed + 777);
+                if (noise_val > 0.3f) {
+                    Color snow = Color(0.93f, 0.94f, 0.96f);
+                    color = color.lerp(snow, snow_factor * (noise_val - 0.3f) * 1.5f);
+                }
             }
             
             st->set_color(color);
@@ -1095,6 +1140,613 @@ bool TerrainGenerator::is_valid_tree_position(float x, float z) const {
     if (dist_from_center < config.tree_center_clear) return false;
     
     return true;
+}
+
+// ============================================================================
+// MOUNTAIN ROCKS AND SNOW
+// ============================================================================
+
+bool TerrainGenerator::is_valid_rock_position(float x, float z) const {
+    // Check if within bounds
+    if (!is_within_bounds(x, z)) return false;
+    
+    // Check height - rocks spawn in mountain areas
+    float height = get_height_at(x, z);
+    if (height < config.rock_min_height) return false;
+    
+    // Check slope - rocks can be on steeper terrain than trees
+    Vector3 normal = get_normal_at(x, z);
+    float slope = 1.0f - normal.y;
+    if (slope > config.rock_max_slope) return false;
+    
+    // Keep center area somewhat clear
+    float dist_from_center = sqrt(x * x + z * z);
+    if (dist_from_center < config.tree_center_clear * 0.7f) return false;
+    
+    return true;
+}
+
+bool TerrainGenerator::is_mountain_area(float x, float z) const {
+    float height = get_height_at(x, z);
+    return height >= config.rock_min_height;
+}
+
+float TerrainGenerator::get_snow_coverage(float height, float slope) const {
+    // Snow coverage based on height and slope
+    // Snow collects less on steep slopes
+    if (height < config.snow_start_height) return 0.0f;
+    if (height >= config.snow_full_height) {
+        // At very high elevations, even steep slopes have some snow
+        float base_coverage = 1.0f;
+        float slope_reduction = Math::clamp(slope * 0.3f, 0.0f, 0.4f);
+        return base_coverage - slope_reduction;
+    }
+    
+    // Interpolate snow coverage based on height
+    float height_factor = (height - config.snow_start_height) / (config.snow_full_height - config.snow_start_height);
+    
+    // Steeper slopes have less snow
+    float slope_factor = 1.0f - Math::clamp(slope * 1.5f, 0.0f, 0.8f);
+    
+    return height_factor * slope_factor;
+}
+
+Ref<ArrayMesh> TerrainGenerator::create_rock_mesh(float size, int detail_level, int seed) {
+    // Create an irregular rocky mesh using deformed icosphere approach
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    // Generate deformed sphere vertices
+    std::vector<Vector3> vertices;
+    std::vector<int> indices;
+    
+    // Simple approach: create a deformed box/polyhedron
+    // Base vertices of a rough cube
+    float s = size * 0.5f;
+    
+    // Create multiple deformed vertices
+    auto deform_vertex = [seed, size](Vector3 v, int vertex_idx) -> Vector3 {
+        int h = (seed + vertex_idx * 374761393) % 2147483647;
+        h = (h ^ (h >> 13)) * 1274126177;
+        float noise_x = ((float)((h >> 0) % 1000) / 1000.0f - 0.5f) * size * 0.3f;
+        float noise_y = ((float)((h >> 10) % 1000) / 1000.0f - 0.5f) * size * 0.25f;
+        float noise_z = ((float)((h >> 20) % 1000) / 1000.0f - 0.5f) * size * 0.3f;
+        return v + Vector3(noise_x, noise_y, noise_z);
+    };
+    
+    // Create a rough dodecahedron-like shape for more natural rocks
+    // Top vertices
+    vertices.push_back(deform_vertex(Vector3(0, s * 1.1f, 0), 0)); // Top peak
+    vertices.push_back(deform_vertex(Vector3(s * 0.6f, s * 0.7f, s * 0.4f), 1));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.5f, s * 0.7f, s * 0.6f), 2));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.6f, s * 0.7f, -s * 0.3f), 3));
+    vertices.push_back(deform_vertex(Vector3(s * 0.4f, s * 0.7f, -s * 0.6f), 4));
+    
+    // Middle ring
+    vertices.push_back(deform_vertex(Vector3(s * 0.9f, 0, s * 0.3f), 5));
+    vertices.push_back(deform_vertex(Vector3(s * 0.3f, 0, s * 0.9f), 6));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.7f, 0, s * 0.7f), 7));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.9f, 0, -s * 0.2f), 8));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.2f, 0, -s * 0.9f), 9));
+    vertices.push_back(deform_vertex(Vector3(s * 0.7f, 0, -s * 0.7f), 10));
+    
+    // Bottom vertices
+    vertices.push_back(deform_vertex(Vector3(s * 0.4f, -s * 0.6f, s * 0.5f), 11));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.5f, -s * 0.5f, s * 0.4f), 12));
+    vertices.push_back(deform_vertex(Vector3(-s * 0.4f, -s * 0.6f, -s * 0.5f), 13));
+    vertices.push_back(deform_vertex(Vector3(s * 0.5f, -s * 0.5f, -s * 0.4f), 14));
+    vertices.push_back(deform_vertex(Vector3(0, -s * 0.8f, 0), 15)); // Bottom
+    
+    // Define triangular faces connecting these vertices
+    // Top cap
+    int top_tris[] = {
+        0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1,
+        // Upper-middle connections
+        1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7, 3,
+        3, 7, 8, 3, 8, 9, 3, 9, 4, 4, 9, 10,
+        4, 10, 5, 4, 5, 1,
+        // Middle band
+        5, 11, 6, 6, 11, 12, 6, 12, 7, 7, 12, 8,
+        8, 12, 13, 8, 13, 9, 9, 13, 14, 9, 14, 10,
+        10, 14, 11, 10, 11, 5,
+        // Bottom cap
+        15, 12, 11, 15, 13, 12, 15, 14, 13, 15, 11, 14
+    };
+    
+    for (int i = 0; i < 60; i += 3) {
+        indices.push_back(top_tris[i]);
+        indices.push_back(top_tris[i + 1]);
+        indices.push_back(top_tris[i + 2]);
+    }
+    
+    // Add vertices and indices to surface tool
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        Vector3 v0 = vertices[indices[i]];
+        Vector3 v1 = vertices[indices[i + 1]];
+        Vector3 v2 = vertices[indices[i + 2]];
+        
+        // Calculate face normal
+        Vector3 edge1 = v1 - v0;
+        Vector3 edge2 = v2 - v0;
+        Vector3 normal = edge1.cross(edge2).normalized();
+        
+        st->set_normal(normal);
+        st->set_uv(Vector2(0.5f, 0.5f));
+        st->add_vertex(v0);
+        
+        st->set_normal(normal);
+        st->set_uv(Vector2(0.0f, 1.0f));
+        st->add_vertex(v1);
+        
+        st->set_normal(normal);
+        st->set_uv(Vector2(1.0f, 1.0f));
+        st->add_vertex(v2);
+    }
+    
+    st->generate_normals();
+    return st->commit();
+}
+
+void TerrainGenerator::generate_mountain_rocks() {
+    UtilityFunctions::print("TerrainGenerator: Generating mountain rocks...");
+    
+    // Create container for all rocks
+    rocks_container = memnew(Node3D);
+    rocks_container->set_name("MountainRocks");
+    add_child(rocks_container);
+    
+    // Create rock materials
+    // Gray granite-like rock
+    rock_material_gray.instantiate();
+    rock_material_gray->set_albedo(Color(0.55f, 0.53f, 0.5f));
+    rock_material_gray->set_roughness(0.85f);
+    rock_material_gray->set_metallic(0.05f);
+    
+    // Darker rock for contrast
+    rock_material_dark.instantiate();
+    rock_material_dark->set_albedo(Color(0.35f, 0.33f, 0.3f));
+    rock_material_dark->set_roughness(0.9f);
+    rock_material_dark->set_metallic(0.02f);
+    
+    // Mossy rock for lower elevations
+    rock_material_mossy.instantiate();
+    rock_material_mossy->set_albedo(Color(0.4f, 0.45f, 0.35f));
+    rock_material_mossy->set_roughness(0.88f);
+    rock_material_mossy->set_metallic(0.0f);
+    
+    // Snow-covered rock for high elevations
+    snow_rock_material.instantiate();
+    snow_rock_material->set_albedo(Color(0.92f, 0.94f, 0.96f));
+    snow_rock_material->set_roughness(0.7f);
+    snow_rock_material->set_metallic(0.0f);
+    snow_rock_material->set_specular(0.6f);
+    
+    float half_world = (config.map_size * config.tile_size) * 0.5f;
+    
+    // Store placed rock positions for spacing check
+    std::vector<Vector2> placed_rocks;
+    placed_rocks.reserve(config.rock_count);
+    
+    int attempts = 0;
+    int max_attempts = config.rock_count * 15;
+    int rocks_placed = 0;
+    int snow_rocks = 0;
+    int mossy_rocks = 0;
+    int gray_rocks = 0;
+    
+    while (rocks_placed < config.rock_count && attempts < max_attempts) {
+        attempts++;
+        
+        // Random position using seed
+        int hash = (config.seed + attempts * 48271 + 99999) % 2147483647;
+        int hash2 = (hash * 16807) % 2147483647;
+        
+        float x = ((float)(hash % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        float z = ((float)(hash2 % 10000) / 10000.0f) * half_world * 2.0f - half_world;
+        
+        // Check if valid position
+        if (!is_valid_rock_position(x, z)) continue;
+        
+        // Check spacing from other rocks
+        bool too_close = false;
+        Vector2 new_pos(x, z);
+        for (const Vector2 &pos : placed_rocks) {
+            if (pos.distance_to(new_pos) < config.rock_min_spacing) {
+                too_close = true;
+                break;
+            }
+        }
+        if (too_close) continue;
+        
+        // Get terrain data at this position
+        float terrain_height = get_height_at(x, z);
+        Vector3 normal = get_normal_at(x, z);
+        float slope = 1.0f - normal.y;
+        
+        // Calculate snow coverage for this rock
+        float snow_coverage = get_snow_coverage(terrain_height, slope);
+        
+        // Random rock size and type
+        int hash3 = (hash2 * 69621) % 2147483647;
+        int hash4 = (hash3 * 12345) % 2147483647;
+        float base_size = 0.5f + ((float)(hash3 % 1000) / 1000.0f) * 2.5f; // 0.5 to 3.0
+        
+        // Larger rocks are rarer
+        if ((hash4 % 100) < 20) {
+            base_size *= 1.5f; // 20% chance of larger rock
+        }
+        if ((hash4 % 100) < 5) {
+            base_size *= 1.8f; // 5% chance of boulder
+        }
+        
+        // Random rotation
+        float rotation_y = ((float)(hash3 % 360));
+        float rotation_x = ((float)((hash3 >> 10) % 30)) - 15.0f; // Slight tilt
+        float rotation_z = ((float)((hash3 >> 20) % 30)) - 15.0f;
+        
+        // Create rock mesh
+        Ref<ArrayMesh> rock_mesh = create_rock_mesh(base_size, 1, hash4);
+        
+        // Determine material based on height and snow coverage
+        Ref<StandardMaterial3D> material;
+        if (snow_coverage > 0.7f) {
+            material = snow_rock_material;
+            snow_rocks++;
+        } else if (snow_coverage > 0.3f) {
+            // Partially snow-covered - use gray with slight tint
+            Ref<StandardMaterial3D> partial_snow;
+            partial_snow.instantiate();
+            Color base = Color(0.55f, 0.53f, 0.5f);
+            Color snow = Color(0.92f, 0.94f, 0.96f);
+            partial_snow->set_albedo(base.lerp(snow, snow_coverage));
+            partial_snow->set_roughness(0.75f);
+            partial_snow->set_metallic(0.03f);
+            material = partial_snow;
+            snow_rocks++;
+        } else if (terrain_height < 8.0f) {
+            // Lower mountain areas - mossy rocks
+            material = rock_material_mossy;
+            mossy_rocks++;
+        } else if ((hash4 % 100) < 40) {
+            // Mix of gray and dark rocks
+            material = rock_material_dark;
+            gray_rocks++;
+        } else {
+            material = rock_material_gray;
+            gray_rocks++;
+        }
+        
+        // Create rock instance
+        MeshInstance3D *rock = memnew(MeshInstance3D);
+        rock->set_mesh(rock_mesh);
+        rock->set_surface_override_material(0, material);
+        
+        // Position the rock, partially buried in terrain
+        float bury_depth = base_size * 0.2f;
+        rock->set_position(Vector3(x, terrain_height - bury_depth, z));
+        rock->set_rotation_degrees(Vector3(rotation_x, rotation_y, rotation_z));
+        
+        // Add slight scale variation
+        float scale_var = 0.85f + ((float)((hash4 >> 8) % 100) / 100.0f) * 0.3f;
+        float y_scale = 0.7f + ((float)((hash4 >> 16) % 100) / 100.0f) * 0.4f; // Flatter or taller
+        rock->set_scale(Vector3(scale_var, y_scale, scale_var));
+        
+        // Add rock clusters sometimes
+        if ((hash4 % 100) < 30 && rocks_placed < config.rock_count - 3) {
+            // Create 2-4 smaller rocks around this one
+            int cluster_count = 2 + (hash4 % 3);
+            for (int c = 0; c < cluster_count; c++) {
+                int cluster_hash = hash4 + c * 54321;
+                float angle = ((float)(cluster_hash % 360)) * Math_PI / 180.0f;
+                float dist = base_size * (0.8f + ((float)((cluster_hash >> 8) % 100) / 100.0f) * 0.5f);
+                float cx = x + cos(angle) * dist;
+                float cz = z + sin(angle) * dist;
+                
+                if (!is_within_bounds(cx, cz)) continue;
+                
+                float c_height = get_height_at(cx, cz);
+                float c_size = base_size * (0.3f + ((float)((cluster_hash >> 16) % 100) / 100.0f) * 0.4f);
+                
+                Ref<ArrayMesh> cluster_rock_mesh = create_rock_mesh(c_size, 0, cluster_hash);
+                MeshInstance3D *cluster_rock = memnew(MeshInstance3D);
+                cluster_rock->set_mesh(cluster_rock_mesh);
+                cluster_rock->set_surface_override_material(0, material);
+                cluster_rock->set_position(Vector3(cx, c_height - c_size * 0.15f, cz));
+                cluster_rock->set_rotation_degrees(Vector3(
+                    ((float)((cluster_hash >> 4) % 40)) - 20.0f,
+                    ((float)(cluster_hash % 360)),
+                    ((float)((cluster_hash >> 12) % 40)) - 20.0f
+                ));
+                
+                rocks_container->add_child(cluster_rock);
+            }
+        }
+        
+        rocks_container->add_child(rock);
+        placed_rocks.push_back(new_pos);
+        rocks_placed++;
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Placed ", rocks_placed, " rocks (", 
+                            snow_rocks, " snowy, ", mossy_rocks, " mossy, ", gray_rocks, " gray)");
+}
+
+// ============================================================================
+// SNOW CAP GENERATION - Creates snow blankets on mountain peaks
+// ============================================================================
+
+Ref<ArrayMesh> TerrainGenerator::create_snow_patch_mesh(float center_x, float center_z, float radius, int segments) {
+    // Create a snow patch that follows the terrain contour
+    Ref<SurfaceTool> st;
+    st.instantiate();
+    st->begin(Mesh::PRIMITIVE_TRIANGLES);
+    
+    // Create vertices in a radial pattern following terrain
+    std::vector<Vector3> vertices;
+    std::vector<Vector3> normals;
+    
+    // Center vertex
+    float center_height = get_height_at(center_x, center_z) + 0.08f; // Slightly above terrain
+    Vector3 center_normal = get_normal_at(center_x, center_z);
+    vertices.push_back(Vector3(center_x, center_height, center_z));
+    normals.push_back(center_normal);
+    
+    // Create rings of vertices
+    int rings = 4;
+    for (int ring = 1; ring <= rings; ring++) {
+        float ring_radius = radius * (float)ring / rings;
+        int ring_segments = segments * ring / 2;
+        if (ring_segments < 6) ring_segments = 6;
+        
+        for (int seg = 0; seg < ring_segments; seg++) {
+            float angle = (float)seg / ring_segments * Math_PI * 2.0f;
+            
+            // Add some noise to make edges irregular
+            int hash = (config.seed + (int)(center_x * 100) + (int)(center_z * 100) + ring * 1000 + seg * 100) % 2147483647;
+            float noise = ((float)(hash % 1000) / 1000.0f - 0.5f) * 0.3f;
+            float actual_radius = ring_radius * (1.0f + noise);
+            
+            float vx = center_x + cos(angle) * actual_radius;
+            float vz = center_z + sin(angle) * actual_radius;
+            
+            // Check if within bounds
+            if (!is_within_bounds(vx, vz)) {
+                vx = center_x + cos(angle) * ring_radius * 0.5f;
+                vz = center_z + sin(angle) * ring_radius * 0.5f;
+            }
+            
+            float vh = get_height_at(vx, vz);
+            
+            // Only include if above snow line (with some tolerance)
+            if (vh < config.snow_start_height - 1.0f) {
+                // Use a point closer to center
+                vx = center_x + cos(angle) * ring_radius * 0.3f;
+                vz = center_z + sin(angle) * ring_radius * 0.3f;
+                vh = get_height_at(vx, vz);
+            }
+            
+            // Snow sits slightly above terrain
+            float snow_offset = 0.05f + 0.03f * (1.0f - (float)ring / rings);
+            vertices.push_back(Vector3(vx, vh + snow_offset, vz));
+            normals.push_back(get_normal_at(vx, vz));
+        }
+    }
+    
+    // Create triangles - fan from center to first ring
+    int first_ring_start = 1;
+    int first_ring_count = segments / 2;
+    if (first_ring_count < 6) first_ring_count = 6;
+    
+    for (int i = 0; i < first_ring_count; i++) {
+        int next = (i + 1) % first_ring_count;
+        
+        st->set_normal(normals[0]);
+        st->set_uv(Vector2(0.5f, 0.5f));
+        st->add_vertex(vertices[0]);
+        
+        st->set_normal(normals[first_ring_start + i]);
+        st->set_uv(Vector2(0.5f + 0.25f * cos((float)i / first_ring_count * Math_PI * 2.0f),
+                           0.5f + 0.25f * sin((float)i / first_ring_count * Math_PI * 2.0f)));
+        st->add_vertex(vertices[first_ring_start + i]);
+        
+        st->set_normal(normals[first_ring_start + next]);
+        st->set_uv(Vector2(0.5f + 0.25f * cos((float)next / first_ring_count * Math_PI * 2.0f),
+                           0.5f + 0.25f * sin((float)next / first_ring_count * Math_PI * 2.0f)));
+        st->add_vertex(vertices[first_ring_start + next]);
+    }
+    
+    // Connect rings together
+    int prev_ring_start = first_ring_start;
+    int prev_ring_count = first_ring_count;
+    
+    for (int ring = 2; ring <= rings; ring++) {
+        int ring_count = segments * ring / 2;
+        if (ring_count < 6) ring_count = 6;
+        int ring_start = prev_ring_start + prev_ring_count;
+        
+        // Connect vertices between rings
+        for (int i = 0; i < ring_count; i++) {
+            int next = (i + 1) % ring_count;
+            
+            // Find corresponding vertex in previous ring
+            int prev_i = (i * prev_ring_count) / ring_count;
+            int prev_next = ((i + 1) * prev_ring_count) / ring_count;
+            if (prev_next >= prev_ring_count) prev_next = 0;
+            
+            // Triangle 1
+            if (ring_start + i < (int)vertices.size() && prev_ring_start + prev_i < (int)vertices.size()) {
+                st->set_normal(normals[prev_ring_start + prev_i]);
+                st->add_vertex(vertices[prev_ring_start + prev_i]);
+                
+                st->set_normal(normals[ring_start + i]);
+                st->add_vertex(vertices[ring_start + i]);
+                
+                st->set_normal(normals[ring_start + next]);
+                st->add_vertex(vertices[ring_start + next]);
+            }
+            
+            // Triangle 2 (when rings have different vertex counts)
+            if (prev_i != prev_next && ring_start + next < (int)vertices.size()) {
+                st->set_normal(normals[prev_ring_start + prev_i]);
+                st->add_vertex(vertices[prev_ring_start + prev_i]);
+                
+                st->set_normal(normals[ring_start + next]);
+                st->add_vertex(vertices[ring_start + next]);
+                
+                st->set_normal(normals[prev_ring_start + prev_next]);
+                st->add_vertex(vertices[prev_ring_start + prev_next]);
+            }
+        }
+        
+        prev_ring_start = ring_start;
+        prev_ring_count = ring_count;
+    }
+    
+    st->generate_normals();
+    return st->commit();
+}
+
+void TerrainGenerator::generate_snow_caps() {
+    UtilityFunctions::print("TerrainGenerator: Generating snow caps...");
+    
+    // Create container for snow meshes
+    snow_container = memnew(Node3D);
+    snow_container->set_name("SnowCaps");
+    add_child(snow_container);
+    
+    // Create snow material - bright white with subtle blue tint
+    snow_material.instantiate();
+    snow_material->set_albedo(Color(0.95f, 0.97f, 1.0f)); // Slightly blue-white
+    snow_material->set_roughness(0.85f); // Matte snow surface
+    snow_material->set_metallic(0.0f);
+    snow_material->set_specular(0.3f);
+    // Add subtle emission for that bright snow look
+    snow_material->set_emission(Color(0.1f, 0.1f, 0.12f));
+    snow_material->set_emission_energy_multiplier(0.1f);
+    
+    int size = config.map_size;
+    float half_world = (size * config.tile_size) * 0.5f;
+    
+    // Find all high-elevation areas and create snow patches
+    int snow_patches = 0;
+    float scan_step = config.tile_size * 6.0f; // Scan every 6 tiles for snow coverage
+    
+    std::vector<Vector2> snow_centers;
+    
+    // First pass: identify mountain peaks and high areas
+    for (float z = -half_world + scan_step; z < half_world - scan_step; z += scan_step) {
+        for (float x = -half_world + scan_step; x < half_world - scan_step; x += scan_step) {
+            float height = get_height_at(x, z);
+            
+            // Check if this area qualifies for snow
+            if (height >= config.snow_start_height) {
+                Vector3 normal = get_normal_at(x, z);
+                float slope = 1.0f - normal.y;
+                
+                // Snow accumulates more on flatter surfaces
+                float snow_threshold = config.snow_start_height + slope * 4.0f;
+                
+                if (height >= snow_threshold) {
+                    // Check if too close to existing snow patch
+                    bool too_close = false;
+                    Vector2 new_pos(x, z);
+                    for (const Vector2 &pos : snow_centers) {
+                        if (pos.distance_to(new_pos) < scan_step * 0.8f) {
+                            too_close = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!too_close) {
+                        snow_centers.push_back(new_pos);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Second pass: create snow patch meshes
+    for (const Vector2 &center : snow_centers) {
+        float height = get_height_at(center.x, center.y);
+        Vector3 normal = get_normal_at(center.x, center.y);
+        float slope = 1.0f - normal.y;
+        
+        // Calculate snow patch size based on height and slope
+        float height_factor = (height - config.snow_start_height) / (config.snow_full_height - config.snow_start_height);
+        height_factor = Math::clamp(height_factor, 0.2f, 1.0f);
+        
+        float slope_factor = 1.0f - Math::clamp(slope * 1.5f, 0.0f, 0.7f);
+        
+        // Snow patch radius
+        float base_radius = scan_step * 0.6f;
+        float radius = base_radius * height_factor * slope_factor;
+        
+        if (radius < 2.0f) radius = 2.0f;
+        
+        // Create snow patch mesh
+        Ref<ArrayMesh> snow_mesh = create_snow_patch_mesh(center.x, center.y, radius, 16);
+        
+        if (snow_mesh.is_valid()) {
+            MeshInstance3D *snow_instance = memnew(MeshInstance3D);
+            snow_instance->set_mesh(snow_mesh);
+            snow_instance->set_surface_override_material(0, snow_material);
+            snow_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+            
+            snow_container->add_child(snow_instance);
+            snow_patches++;
+        }
+    }
+    
+    // Also create larger connected snow fields on the highest peaks
+    // Find the highest points and create big snow blankets
+    std::vector<std::pair<Vector2, float>> peak_candidates;
+    
+    for (float z = -half_world + scan_step * 2; z < half_world - scan_step * 2; z += scan_step * 2) {
+        for (float x = -half_world + scan_step * 2; x < half_world - scan_step * 2; x += scan_step * 2) {
+            float height = get_height_at(x, z);
+            
+            if (height >= config.snow_full_height * 0.85f) {
+                // This is a high peak - check if it's a local maximum
+                bool is_peak = true;
+                float check_dist = scan_step;
+                
+                for (int dz = -1; dz <= 1 && is_peak; dz++) {
+                    for (int dx = -1; dx <= 1 && is_peak; dx++) {
+                        if (dx == 0 && dz == 0) continue;
+                        float neighbor_height = get_height_at(x + dx * check_dist, z + dz * check_dist);
+                        if (neighbor_height > height + 0.5f) {
+                            is_peak = false;
+                        }
+                    }
+                }
+                
+                if (is_peak) {
+                    peak_candidates.push_back({Vector2(x, z), height});
+                }
+            }
+        }
+    }
+    
+    // Create large snow blankets on peaks
+    for (const auto &peak : peak_candidates) {
+        float large_radius = scan_step * 2.5f;
+        
+        // Create a larger, more detailed snow mesh for peaks
+        Ref<ArrayMesh> peak_snow = create_snow_patch_mesh(peak.first.x, peak.first.y, large_radius, 24);
+        
+        if (peak_snow.is_valid()) {
+            MeshInstance3D *snow_instance = memnew(MeshInstance3D);
+            snow_instance->set_mesh(peak_snow);
+            snow_instance->set_surface_override_material(0, snow_material);
+            snow_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+            
+            snow_container->add_child(snow_instance);
+            snow_patches++;
+        }
+    }
+    
+    UtilityFunctions::print("TerrainGenerator: Created ", snow_patches, " snow patches on mountain peaks");
 }
 
 void TerrainGenerator::generate_trees() {
